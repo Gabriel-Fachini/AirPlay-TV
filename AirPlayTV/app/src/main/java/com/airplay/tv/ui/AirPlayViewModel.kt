@@ -1,10 +1,18 @@
 package com.airplay.tv.ui
 
 import android.app.Application
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.os.IBinder
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.airplay.tv.network.NetworkUtils
 import com.airplay.tv.network.mDNSModule
+import com.airplay.tv.protocol.ProtocolHandler
+import com.airplay.tv.service.AirPlayService
+import com.airplay.tv.service.SessionManager
 import com.airplay.tv.util.Constants
 import com.airplay.tv.util.Logger
 import com.airplay.tv.util.TelemetryCollector
@@ -23,6 +31,28 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
     val uiState: StateFlow<UIStateManager.UIState> = uiStateManager.currentState
     val telemetry: StateFlow<TelemetryCollector.Telemetry> = telemetryCollector.telemetry
     val mdnsState: StateFlow<mDNSModule.ServiceState> = mdnsModule.serviceState
+    
+    // Service binding
+    private var airPlayService: AirPlayService? = null
+    private var serviceBound = false
+    
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            Logger.i(Logger.TAG_SERVICE, "Service connected")
+            val binder = service as AirPlayService.LocalBinder
+            airPlayService = binder.getService()
+            serviceBound = true
+            
+            // Observar estados do serviço
+            observeServiceStates()
+        }
+        
+        override fun onServiceDisconnected(name: ComponentName?) {
+            Logger.i(Logger.TAG_SERVICE, "Service disconnected")
+            airPlayService = null
+            serviceBound = false
+        }
+    }
     
     init {
         Logger.i(Logger.TAG_UI, "AirPlayViewModel initialized")
@@ -46,10 +76,94 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
     }
     
     /**
+     * Observa estados do serviço AirPlay
+     */
+    private fun observeServiceStates() {
+        val service = airPlayService ?: return
+        
+        // Observar estado da sessão
+        viewModelScope.launch {
+            service.getSessionState().collect { sessionState ->
+                handleSessionStateChange(sessionState)
+            }
+        }
+        
+        // Observar estado da conexão
+        viewModelScope.launch {
+            service.getConnectionState().collect { connectionState ->
+                handleConnectionStateChange(connectionState)
+            }
+        }
+    }
+    
+    /**
+     * Trata mudanças de estado da sessão
+     */
+    private fun handleSessionStateChange(state: SessionManager.SessionState) {
+        when (state) {
+            is SessionManager.SessionState.Idle -> {
+                Logger.i(Logger.TAG_UI, "Session state: Idle")
+                uiStateManager.returnToIdle(Constants.DEFAULT_DEVICE_NAME)
+                telemetryCollector.reset()
+            }
+            
+            is SessionManager.SessionState.Active -> {
+                Logger.i(Logger.TAG_UI, "Session state: Active")
+                uiStateManager.transitionTo(
+                    UIStateManager.UIState.Mirroring(
+                        clientIp = state.session.clientIp,
+                        resolution = state.session.getResolutionString(),
+                        sessionStartTime = state.session.startTime
+                    )
+                )
+                
+                // Atualizar telemetria
+                telemetryCollector.updateResolution(
+                    state.session.videoWidth,
+                    state.session.videoHeight
+                )
+            }
+            
+            is SessionManager.SessionState.Timeout -> {
+                Logger.w(Logger.TAG_UI, "Session state: Timeout")
+                uiStateManager.transitionTo(
+                    UIStateManager.UIState.Error("Conexão perdida (timeout)")
+                )
+            }
+        }
+    }
+    
+    /**
+     * Trata mudanças de estado da conexão
+     */
+    private fun handleConnectionStateChange(state: ProtocolHandler.ConnectionState) {
+        when (state) {
+            is ProtocolHandler.ConnectionState.Idle -> {
+                Logger.i(Logger.TAG_UI, "Connection state: Idle")
+                // Estado já tratado pelo SessionManager
+            }
+            
+            is ProtocolHandler.ConnectionState.Connected -> {
+                Logger.i(Logger.TAG_UI, "Connection state: Connected")
+                uiStateManager.transitionTo(
+                    UIStateManager.UIState.Connecting(state.clientIp)
+                )
+            }
+            
+            is ProtocolHandler.ConnectionState.Error -> {
+                Logger.e(Logger.TAG_UI, "Connection state: Error")
+                uiStateManager.transitionTo(
+                    UIStateManager.UIState.Error(state.message)
+                )
+            }
+        }
+    }
+    
+    /**
      * Inicia o serviço AirPlay
      * - Verifica conexão Wi-Fi (ou permite emulador)
      * - Registra serviço mDNS
-     * - Prepara para receber conexões
+     * - Inicia servidor RTSP
      */
     fun startService() {
         viewModelScope.launch {
@@ -73,9 +187,7 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
             
             // Obter IP local
             val localIp = NetworkUtils.getLocalIpAddress()
-            if (localIp == null) {
-                Logger.w(Logger.TAG_SERVICE, "Could not determine local IP address")
-            } else {
+            if (localIp != null) {
                 Logger.i(Logger.TAG_SERVICE, "Local IP: $localIp")
             }
             
@@ -83,8 +195,6 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
             val ssid = NetworkUtils.getWifiSsid(getApplication())
             if (ssid != null) {
                 Logger.i(Logger.TAG_SERVICE, "Connected to Wi-Fi: $ssid")
-            } else {
-                Logger.d(Logger.TAG_SERVICE, "Wi-Fi SSID not available (emulator?)")
             }
             
             // Registrar serviço mDNS
@@ -93,8 +203,12 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
                 port = Constants.RTSP_PORT
             )
             
-            // TODO: Fase 4 - Iniciar servidor RTSP
-            Logger.d(Logger.TAG_SERVICE, "RTSP server will be started in Phase 4")
+            // Iniciar AirPlayService
+            val intent = Intent(getApplication(), AirPlayService::class.java)
+            getApplication<Application>().startService(intent)
+            getApplication<Application>().bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+            
+            Logger.i(Logger.TAG_SERVICE, "AirPlay service started")
         }
     }
     
@@ -110,23 +224,29 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
             // Desregistrar serviço mDNS
             mdnsModule.unregisterService()
             
-            // TODO: Fase 4 - Parar servidor RTSP
-            Logger.d(Logger.TAG_SERVICE, "RTSP server will be stopped in Phase 4")
+            // Parar AirPlayService
+            if (serviceBound) {
+                getApplication<Application>().unbindService(serviceConnection)
+                serviceBound = false
+            }
+            
+            val intent = Intent(getApplication(), AirPlayService::class.java)
+            getApplication<Application>().stopService(intent)
+            
+            Logger.i(Logger.TAG_SERVICE, "AirPlay service stopped")
         }
     }
     
     /**
-     * Encerra sessão atual (stub - será implementado na Fase 4)
+     * Encerra sessão atual
      */
     fun endSession() {
         viewModelScope.launch {
-            Logger.i(Logger.TAG_SESSION, "Ending session (stub)")
-            // TODO: Implementar na Fase 4
-            // - Enviar TEARDOWN
-            // - Parar decoders
-            // - Liberar recursos
+            Logger.i(Logger.TAG_SESSION, "Ending session")
             
-            // Por enquanto, apenas retorna ao Idle
+            airPlayService?.endSession()
+            
+            // Retornar ao Idle
             uiStateManager.returnToIdle(Constants.DEFAULT_DEVICE_NAME)
             telemetryCollector.reset()
         }
@@ -179,3 +299,4 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
         mdnsModule.cleanup()
     }
 }
+
