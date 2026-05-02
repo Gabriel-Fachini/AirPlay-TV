@@ -42,6 +42,32 @@ bool NTPClient::start(const std::string& clientIp, int clientPort) {
         return false;
     }
 
+    // CRITICAL: Bind to port 0 so OS chooses a stable ephemeral port
+    // Without bind(), each sendto() may use a different source port,
+    // causing the Mac's responses to go to the wrong port
+    struct sockaddr_in localAddr;
+    memset(&localAddr, 0, sizeof(localAddr));
+    localAddr.sin_family = AF_INET;
+    localAddr.sin_addr.s_addr = INADDR_ANY;  // 0.0.0.0
+    localAddr.sin_port = htons(0);           // 0 = OS chooses ephemeral port
+
+    if (bind(socket_, (struct sockaddr*)&localAddr, sizeof(localAddr)) < 0) {
+        LOGE("Failed to bind NTP socket: %s", strerror(errno));
+        close(socket_);
+        socket_ = -1;
+        return false;
+    }
+
+    // Get the actual port number chosen by the OS
+    socklen_t addrLen = sizeof(localAddr);
+    if (getsockname(socket_, (struct sockaddr*)&localAddr, &addrLen) < 0) {
+        LOGW("Failed to get socket name: %s", strerror(errno));
+    } else {
+        unsigned short localPort = ntohs(localAddr.sin_port);
+        LOGI("NTP client bound to local port %d, sending to %s:%d", 
+             localPort, clientIp.c_str(), clientPort);
+    }
+    
     // Set receive timeout to allow checking running_ flag
     struct timeval tv;
     tv.tv_sec = 0;
@@ -58,7 +84,7 @@ bool NTPClient::start(const std::string& clientIp, int clientPort) {
     running_ = true;
     thread_ = std::thread(&NTPClient::ntpThread, this);
 
-    LOGI("NTP client started, sending to %s:%d every 3 seconds", 
+    LOGI("NTP client started (ephemeral port), sending to %s:%d every 3 seconds", 
          clientIp.c_str(), clientPort);
     return true;
 }

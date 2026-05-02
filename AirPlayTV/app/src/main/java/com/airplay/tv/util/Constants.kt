@@ -27,7 +27,10 @@ object Constants {
     const val JITTER_BUFFER_FRAMES = 5
     
     // Session
-    const val SESSION_TIMEOUT_MS = 5000L
+    // Timeout aumentado para 30 segundos para acomodar mirroring
+    // Durante mirroring, o Mac pode não enviar requisições RTSP por longos períodos
+    // apenas enviando pacotes de vídeo via TCP
+    const val SESSION_TIMEOUT_MS = 30000L
     const val RECONNECT_DELAY_MS = 3000L
     
     // Debug

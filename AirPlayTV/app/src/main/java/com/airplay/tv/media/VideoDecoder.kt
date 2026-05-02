@@ -141,12 +141,34 @@ class VideoDecoder(
                 }
                 setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, Constants.MAX_INPUT_BUFFER_SIZE)
                 setInteger(MediaFormat.KEY_FRAME_RATE, Constants.TARGET_FPS)
+                
+                // Configurações para melhorar qualidade de decodificação
+                // Low latency mode: reduz buffering interno do decoder
+                try {
+                    setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                } catch (e: Exception) {
+                    Logger.d(Logger.TAG_VIDEO, "KEY_LOW_LATENCY not supported on this device")
+                }
+                
+                // Operating rate: hint para o decoder sobre a taxa de frames esperada
+                try {
+                    setInteger(MediaFormat.KEY_OPERATING_RATE, Constants.TARGET_FPS)
+                } catch (e: Exception) {
+                    Logger.d(Logger.TAG_VIDEO, "KEY_OPERATING_RATE not supported on this device")
+                }
+                
+                // Priority: alta prioridade para decodificação de vídeo
+                try {
+                    setInteger(MediaFormat.KEY_PRIORITY, 0) // 0 = realtime priority
+                } catch (e: Exception) {
+                    Logger.d(Logger.TAG_VIDEO, "KEY_PRIORITY not supported on this device")
+                }
             }
             
             codec?.configure(format, surface, null, 0)
             
             _state.value = DecoderState.Configured
-            Logger.i(Logger.TAG_VIDEO, "Video decoder configured successfully")
+            Logger.i(Logger.TAG_VIDEO, "Video decoder configured successfully with low latency optimizations")
             
             return true
             
@@ -244,12 +266,21 @@ class VideoDecoder(
             return
         }
         
-        val frame = H264Frame(data, timestamp, isKeyFrame)
-        
         if (data.isEmpty()) {
             Logger.w(Logger.TAG_VIDEO, "Ignoring empty frame (keyframe=$isKeyFrame, timestamp=$timestamp)")
             return
         }
+        
+        // Validar frame antes de enfileirar
+        if (!isValidH264Frame(data)) {
+            framesDropped++
+            if (framesDropped % 10 == 0L) {
+                Logger.w(Logger.TAG_VIDEO, "Dropping invalid H.264 frame (total dropped=$framesDropped)")
+            }
+            return
+        }
+        
+        val frame = H264Frame(data, timestamp, isKeyFrame)
         
         if (inputQueue.offer(frame)) {
             return
@@ -289,6 +320,42 @@ class VideoDecoder(
         if (framesDropped % 10 == 0L) {
             Logger.w(Logger.TAG_VIDEO, "Input queue full, dropping frames (total dropped=$framesDropped)")
         }
+    }
+    
+    /**
+     * Valida se um frame H.264 está bem formado
+     * Verifica se contém pelo menos um NAL unit válido com start code
+     */
+    private fun isValidH264Frame(data: ByteArray): Boolean {
+        if (data.size < 5) { // Mínimo: start code (4 bytes) + NAL header (1 byte)
+            return false
+        }
+        
+        // Procurar por start code (0x00 0x00 0x00 0x01)
+        var hasValidNal = false
+        var i = 0
+        while (i <= data.size - 4) {
+            if (data[i] == 0.toByte() && 
+                data[i + 1] == 0.toByte() && 
+                data[i + 2] == 0.toByte() && 
+                data[i + 3] == 1.toByte()) {
+                
+                // Verificar se há NAL header após o start code
+                if (i + 4 < data.size) {
+                    val nalHeader = data[i + 4].toInt() and 0xFF
+                    val nalType = nalHeader and 0x1F
+                    
+                    // NAL types válidos: 1-5 (VCL), 6-12 (non-VCL), 7 (SPS), 8 (PPS)
+                    if (nalType in 1..12) {
+                        hasValidNal = true
+                        break
+                    }
+                }
+            }
+            i++
+        }
+        
+        return hasValidNal
     }
     
     /**

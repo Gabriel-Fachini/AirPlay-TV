@@ -48,6 +48,10 @@ class ProtocolHandler(
     )
     val sessionActivity: SharedFlow<String> = _sessionActivity.asSharedFlow()
     
+    // Controle de throttling para sessionActivity
+    private var lastActivityTime = 0L
+    private val activityThrottleMs = 1000L // Emitir no máximo 1x por segundo
+    
     // Codec config received event
     data class CodecConfig(
         val sps: java.nio.ByteBuffer,
@@ -237,9 +241,19 @@ class ProtocolHandler(
         return mirroringSession.buildSetupResponse(data)
     }
 
+    /**
+     * Callback de pacote de vídeo de mirroring do código nativo
+     * Emite sessionActivity com throttling para evitar overhead
+     */
     @Suppress("unused")
     private fun onMirroringVideoPacket(payloadType: Int, data: ByteArray) {
-        _sessionActivity.tryEmit("MIRROR_VIDEO")
+        // Throttle sessionActivity para evitar emitir a cada frame (30-60 fps)
+        val now = System.currentTimeMillis()
+        if (now - lastActivityTime >= activityThrottleMs) {
+            _sessionActivity.tryEmit("MIRROR_VIDEO")
+            lastActivityTime = now
+        }
+        
         mirroringSession.handleVideoPacket(payloadType, data)
     }
     
