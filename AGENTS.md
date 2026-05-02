@@ -14,6 +14,8 @@ Este documento orienta agentes de IA que trabalharão na implementação deste p
 
 **Escopo MVP**: Mirroring de tela com áudio, uma sessão por vez, sem PIN, instalação local via APK
 
+**Estratégia de Teste**: Desenvolvimento e testes iniciais no emulador Android TV, validação final no hardware real
+
 ---
 
 ## 🗂️ Estrutura de Documentação
@@ -222,6 +224,10 @@ try {
 
 ## 🧪 Estratégia de Testes
 
+### Ambiente de Desenvolvimento
+- **Emulador Android TV**: Testes iniciais e desenvolvimento iterativo
+- **Hardware Real (Sony KD-55X755F)**: Validação final e testes de performance
+
 ### Testes Unitários (quando aplicável)
 
 - Lógica de negócio (ViewModel, SessionManager)
@@ -230,7 +236,8 @@ try {
 
 ### Testes de Integração (prioritários)
 
-- Testar no hardware real (TV Sony)
+- Testar no emulador durante desenvolvimento
+- Validar no hardware real (TV Sony) ao final de cada fase
 - Validar com dispositivos Apple reais (Mac, iPhone, iPad)
 - Cenários do mundo real (apresentações, fotos, vídeos)
 
@@ -240,6 +247,15 @@ try {
 - Monitorar FPS durante sessão
 - Verificar uso de CPU/memória
 - Detectar memory leaks (Android Profiler)
+
+### Limitações do Emulador
+
+⚠️ **Importante**: O emulador Android pode ter limitações com:
+- mDNS/Bonjour (multicast pode não funcionar)
+- Aceleração de hardware (MediaCodec)
+- Performance de rede
+
+Se funcionalidades não funcionarem no emulador, isso pode ser esperado. Validação real deve ser feita no hardware físico.
 
 ---
 

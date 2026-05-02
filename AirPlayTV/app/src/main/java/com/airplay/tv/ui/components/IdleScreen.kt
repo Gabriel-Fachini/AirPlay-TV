@@ -12,12 +12,16 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.airplay.tv.R
+import com.airplay.tv.network.mDNSModule
 
 /**
  * Tela de estado Idle: aguardando conexão
  */
 @Composable
-fun IdleScreen(deviceName: String) {
+fun IdleScreen(
+    deviceName: String,
+    mdnsState: mDNSModule.ServiceState = mDNSModule.ServiceState.Unregistered
+) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -53,6 +57,39 @@ fun IdleScreen(deviceName: String) {
                 color = Color.White.copy(alpha = 0.5f),
                 textAlign = TextAlign.Center
             )
+            
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            // Status do mDNS
+            MDNSStatusIndicator(mdnsState)
         }
     }
+}
+
+/**
+ * Indicador de status do serviço mDNS
+ */
+@Composable
+fun MDNSStatusIndicator(state: mDNSModule.ServiceState) {
+    val (statusText, statusColor) = when (state) {
+        is mDNSModule.ServiceState.Unregistered -> {
+            "⚪ Serviço não registrado" to Color.Gray
+        }
+        is mDNSModule.ServiceState.Registering -> {
+            "🟡 Registrando serviço..." to Color.Yellow
+        }
+        is mDNSModule.ServiceState.Registered -> {
+            "🟢 Visível na rede como: ${state.serviceName}" to Color.Green
+        }
+        is mDNSModule.ServiceState.Failed -> {
+            "🔴 Erro: ${state.message}" to Color.Red
+        }
+    }
+    
+    Text(
+        text = statusText,
+        fontSize = 18.sp,
+        color = statusColor,
+        textAlign = TextAlign.Center
+    )
 }

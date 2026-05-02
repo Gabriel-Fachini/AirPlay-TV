@@ -18,6 +18,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.foundation.lazy.list.TvLazyRow
+import com.airplay.tv.network.mDNSModule
 import com.airplay.tv.ui.AirPlayViewModel
 import com.airplay.tv.ui.UIStateManager
 import com.airplay.tv.ui.components.*
@@ -93,12 +94,16 @@ class MainActivity : ComponentActivity() {
 fun AirPlayScreenWithTestButtons(viewModel: AirPlayViewModel) {
     val uiState by viewModel.uiState.collectAsState()
     val telemetry by viewModel.telemetry.collectAsState()
+    val mdnsState by viewModel.mdnsState.collectAsState()
     
     Box(modifier = Modifier.fillMaxSize()) {
         // UI principal (telas)
         when (val state = uiState) {
             is UIStateManager.UIState.Idle -> {
-                IdleScreen(deviceName = state.deviceName)
+                IdleScreen(
+                    deviceName = state.deviceName,
+                    mdnsState = mdnsState
+                )
             }
             
             is UIStateManager.UIState.Connecting -> {
@@ -133,7 +138,7 @@ fun AirPlayScreenWithTestButtons(viewModel: AirPlayViewModel) {
 
 /**
  * Overlay com botões de teste para navegar entre estados
- * Usa componentes TV-specific para suporte adequado a D-pad
+ * Versão compacta para não obstruir a tela
  */
 @OptIn(androidx.tv.foundation.ExperimentalTvFoundationApi::class)
 @Composable
@@ -144,22 +149,22 @@ fun TestButtonsOverlay(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .background(Color.Black.copy(alpha = 0.8f))
-            .padding(16.dp),
+            .background(Color.Black.copy(alpha = 0.7f))
+            .padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        // Título
+        // Título compacto
         Text(
-            text = "🧪 BOTÕES DE TESTE - Use as setas ← → do teclado",
-            fontSize = 16.sp,
+            text = "🧪 TESTE (use ← → Enter)",
+            fontSize = 12.sp,
             color = Color.Yellow
         )
         
-        // Linha 1: Estados principais (usando TvLazyRow para navegação)
+        // Botões em uma linha (usando TvLazyRow para navegação)
         TvLazyRow(
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            contentPadding = PaddingValues(horizontal = 8.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(horizontal = 4.dp)
         ) {
             item {
                 TestButton(
@@ -189,44 +194,16 @@ fun TestButtonsOverlay(
                 TestButton(
                     text = "Error",
                     color = Color(0xFFF44336),
-                    onClick = { viewModel.simulateError("Erro de teste simulado") }
+                    onClick = { viewModel.simulateError("Erro de teste") }
                 )
             }
         }
-        
-        // Linha 2: Variações
-        TvLazyRow(
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            contentPadding = PaddingValues(horizontal = 8.dp)
-        ) {
-            item {
-                TestButton(
-                    text = "720p",
-                    color = Color(0xFF9C27B0),
-                    onClick = { viewModel.simulateMirroring("192.168.1.100", "1280x720") }
-                )
-            }
-            
-            item {
-                TestButton(
-                    text = "Erro Rede",
-                    color = Color(0xFFE91E63),
-                    onClick = { viewModel.simulateError("Conexão perdida (timeout)") }
-                )
-            }
-        }
-        
-        // Hint
-        Text(
-            text = "↑ ↓ para mudar de linha | ← → para navegar | Enter para selecionar",
-            fontSize = 12.sp,
-            color = Color.White.copy(alpha = 0.6f)
-        )
     }
 }
 
 /**
  * Botão de teste customizado com suporte a foco (D-pad/teclado)
+ * Versão compacta
  */
 @OptIn(androidx.tv.material3.ExperimentalTvMaterial3Api::class)
 @Composable
@@ -242,15 +219,15 @@ fun TestButton(
             focusedContainerColor = color.copy(alpha = 0.8f)
         ),
         scale = androidx.tv.material3.ButtonDefaults.scale(
-            focusedScale = 1.1f
+            focusedScale = 1.05f
         ),
         modifier = Modifier
-            .width(120.dp)
-            .height(50.dp)
+            .width(90.dp)
+            .height(40.dp)
     ) {
         Text(
             text = text,
-            fontSize = 14.sp,
+            fontSize = 12.sp,
             color = Color.White
         )
     }
