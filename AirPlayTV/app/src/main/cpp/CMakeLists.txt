@@ -23,6 +23,7 @@ add_library(
     network/network_utils.cpp
     network/rtp_receiver.cpp
     network/mirror_server.cpp
+    network/ntp_client.cpp
     # Third party
     third_party/playfair/hand_garble.c
     third_party/playfair/modified_md5.c

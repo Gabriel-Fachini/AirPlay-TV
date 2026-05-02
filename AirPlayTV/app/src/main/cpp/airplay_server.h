@@ -13,6 +13,7 @@ class RTSPHandler;
 class FairPlayHandler;
 class RTPReceiver;
 class MirrorServer;
+class NTPClient;
 
 /**
  * Servidor RTSP/AirPlay simplificado
@@ -140,6 +141,7 @@ private:
     std::unique_ptr<FairPlayHandler> fairplayHandler_;
     std::unique_ptr<RTPReceiver> rtpReceiver_;
     std::unique_ptr<MirrorServer> mirrorServer_;
+    std::unique_ptr<NTPClient> ntpClient_;
 };
 
 #endif // AIRPLAY_SERVER_H

@@ -13,6 +13,7 @@
 #include "protocol/fairplay_handler.h"
 #include "network/rtp_receiver.h"
 #include "network/mirror_server.h"
+#include "network/ntp_client.h"
 #include "network/network_utils.h"
 #include <android/log.h>
 #include <sys/socket.h>
@@ -191,6 +192,14 @@ void AirPlayServer::handleClient(int clientSocket) {
             onConnection_(clientIp_);
         }
         startRTPReceiver();
+        
+        // Start NTP client for time synchronization (required for mirroring)
+        if (!ntpClient_) {
+            ntpClient_ = std::make_unique<NTPClient>();
+        }
+        if (!clientIp_.empty() && !ntpClient_->isRunning()) {
+            ntpClient_->start(clientIp_, 7010);
+        }
     });
 
     fairplayHandler_->setPairSetupCallback([](const uint8_t* data, size_t size, bool* ok) {
@@ -442,6 +451,12 @@ void AirPlayServer::stopRTPReceiver() {
     if (rtpReceiver_) {
         rtpReceiver_->stop();
         rtpReceiver_.reset();
+    }
+    
+    // Stop NTP client
+    if (ntpClient_) {
+        ntpClient_->stop();
+        ntpClient_.reset();
     }
 }
 

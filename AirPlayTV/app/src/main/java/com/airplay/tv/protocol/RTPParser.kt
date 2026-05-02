@@ -129,19 +129,23 @@ class RTPParser {
         // Skip CSRC identifiers (se presentes)
         val csrcSize = csrcCount * 4
         if (csrcSize > 0) {
+            if (buffer.remaining() < csrcSize) {
+                Logger.w(Logger.TAG_PROTOCOL, "Invalid RTP CSRC: need $csrcSize bytes, have ${buffer.remaining()}")
+                return null
+            }
             buffer.position(buffer.position() + csrcSize)
         }
         
         // Skip extension header (se presente)
         if (extension) {
             if (buffer.remaining() < 4) {
-                Logger.w(Logger.TAG_PROTOCOL, "Invalid RTP extension")
+                Logger.w(Logger.TAG_PROTOCOL, "Invalid RTP extension: need 4 bytes, have ${buffer.remaining()}")
                 return null
             }
             buffer.short // Extension type
             val extLength = (buffer.short.toInt() and 0xFFFF) * 4
             if (buffer.remaining() < extLength) {
-                Logger.w(Logger.TAG_PROTOCOL, "Invalid RTP extension length")
+                Logger.w(Logger.TAG_PROTOCOL, "Invalid RTP extension length: need $extLength bytes, have ${buffer.remaining()}")
                 return null
             }
             buffer.position(buffer.position() + extLength)
@@ -155,13 +159,21 @@ class RTPParser {
             val paddingLength = data[size - 1].toInt() and 0xFF
             payloadSize -= paddingLength
             if (payloadSize < 0) {
-                Logger.w(Logger.TAG_PROTOCOL, "Invalid RTP padding")
+                Logger.w(Logger.TAG_PROTOCOL, "Invalid RTP padding: paddingLength=$paddingLength, remaining=$payloadSize")
                 return null
             }
         }
         
+        // Validar payload size
+        if (payloadSize < 0 || payloadSize > buffer.remaining()) {
+            Logger.w(Logger.TAG_PROTOCOL, "Invalid RTP payload size: $payloadSize (buffer has ${buffer.remaining()} bytes)")
+            return null
+        }
+        
         val payload = ByteArray(payloadSize)
-        buffer.get(payload, 0, payloadSize)
+        if (payloadSize > 0) {
+            buffer.get(payload, 0, payloadSize)
+        }
         
         val header = RTPHeader(
             version = version,

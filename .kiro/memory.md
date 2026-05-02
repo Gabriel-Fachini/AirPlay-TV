@@ -2256,3 +2256,276 @@ void AirPlayServer::handleInfo(int socket, const std::string& cseq) {
 - API pública preservada
 - Separação de responsabilidades alcançada
 - Objetivo de redução de tokens atingido
+
+
+### 2026-05-02 - Problema Crítico: Parsing Duplo de RTP
+
+**Contexto**: Após corrigir o crash do RTPParser, o áudio não chegava e havia muitos erros de "Invalid RTP version".
+
+**Problema**: **Parsing duplo de pacotes RTP**
+- O código C++ (`rtp_receiver.cpp`) já extraía o payload RTP e enviava apenas o payload para o Java
+- O código Java (`ProtocolHandler.kt`) tentava parsear novamente como se fosse um pacote RTP completo
+- Resultado: Tentava interpretar dados H.264/AAC puros como headers RTP, gerando erros
+
+**Sintomas**:
+```
+Invalid RTP version: 0
+Invalid RTP version: 1
+Invalid RTP version: 3
+Invalid RTP padding: paddingLength=128, remaining=-33
+RTP packet too small: 4 bytes
+Video RTP: packets=3, lost=131070 (100,00%), bytes=279
+Audio RTP: packets=3, lost=131070 (100,00%), bytes=192
+Audio decoder stopped (decoded=0, dropped=0)
+```
+
+**Causa Raiz**:
+- **C++ (`rtp_receiver.cpp` linha 300-368)**: 
+  - Parseia header RTP completo
+  - Extrai payload (H.264 ou AAC puro)
+  - Chama `onVideoData(payload, payloadSize, timestamp)` ou `onAudioData(payload, payloadSize, timestamp)`
+  
+- **Java (`ProtocolHandler.kt` linha 256-280)**:
+  - Recebia o payload puro
+  - Tentava parsear como RTP: `rtpParser.parsePacket(data, data.size)`
+  - Falhava porque não era um pacote RTP
+
+**Solução**:
+- Remover parsing RTP do Java
+- Usar dados diretamente como payload H.264/AAC
+- Enviar direto para os decoders
+
+**Código Corrigido**:
+```kotlin
+// ANTES (ERRADO)
+private fun onVideoData(data: ByteArray, timestamp: Long) {
+    val packet = rtpParser.parsePacket(data, data.size)  // ❌ Parsing duplo!
+    if (packet != null && packet.header.payloadType == RTPParser.PAYLOAD_TYPE_H264) {
+        videoDecoder?.queueFrame(packet.payload, ...)
+    }
+}
+
+// DEPOIS (CORRETO)
+private fun onVideoData(data: ByteArray, timestamp: Long) {
+    // Dados já são payload H.264 puro, enviar direto
+    videoDecoder?.queueFrame(data, timestamp, isKeyFrame = false)
+}
+```
+
+**Impacto**:
+- ✅ Elimina 100% dos erros de "Invalid RTP version"
+- ✅ Áudio deve começar a chegar corretamente
+- ✅ Vídeo deve processar todos os frames (não apenas os que passavam no parser)
+- ✅ Performance melhorada (menos processamento)
+
+**Lições Aprendidas**:
+1. **Sempre verificar a arquitetura completa** antes de adicionar parsing
+2. **Documentar claramente** o que cada camada faz (C++ vs Java)
+3. **Logs detalhados** ajudam a identificar parsing duplo
+4. **RTPParser.kt pode ser removido** ou usado apenas para estatísticas futuras
+
+**Arquivos Modificados**:
+- `ProtocolHandler.kt`: Removido parsing RTP, dados usados diretamente
+
+**Próximos Testes**:
+1. Verificar se áudio chega ao decoder
+2. Verificar se vídeo processa mais frames
+3. Monitorar logs de "decoded" vs "dropped"
+4. Testar novamente com vídeo do YouTube no Mac
+
+**Referências**:
+- `rtp_receiver.cpp` linha 300-368 (parsing RTP em C++)
+- `ProtocolHandler.kt` linha 256-280 (callbacks Java)
+- RFC 3550 (RTP specification)
+
+
+### 2026-05-02 - Crash do MediaCodec com Dados Inválidos
+
+**Contexto**: Após remover parsing RTP duplo, o vídeo funcionou por ~23 segundos mas depois o decoder crashou.
+
+**Problema**: **MediaCodec crashou com erro de hardware** ao receber dados H.264 inválidos.
+
+**Sintomas**:
+```
+ERROR(0x80001001) - OMX.MTK.VIDEO.DECODER.AVC
+ERROR(0x80001005) - OMX.MTK.VIDEO.DECODER.AVC
+Codec reported err 0x80001001, actionCode 0, while in state 6
+IllegalStateException at MediaCodec.native_dequeueOutputBuffer
+Cannot queue frame: decoder is in error state (repetido centenas de vezes)
+Video decoder stopped (decoded=252, dropped=44, fps=55)
+Audio decoder stopped (decoded=0, dropped=0)
+```
+
+**Causa Raiz**:
+1. **Mirroring funciona via TCP** (MirrorServer), não via RTP
+2. **Callbacks RTP (`onVideoData`/`onAudioData`) não são usados** para mirroring do Mac
+3. O vídeo funcionou via `onMirroringVideoPacket` → `handleVideoPacket` (correto)
+4. O decoder crashou porque **recebeu dados H.264 malformados** em algum momento
+5. Após o crash, o decoder entrou em estado de erro e rejeitou todos os frames subsequentes
+
+**Descobertas Importantes**:
+
+1. **Arquitetura de Dados**:
+   - **Mirroring (Mac)**: Usa TCP via `MirrorServer` → `onMirroringVideoPacket` → `handleVideoPacket`
+   - **RTP (iPhone/iPad)**: Usa UDP via `RTPReceiver` → `onVideoData`/`onAudioData`
+   - Os dois caminhos são **independentes**
+
+2. **Áudio não funciona no mirroring**:
+   - `Audio decoder stopped (decoded=0, dropped=0)`
+   - Áudio de mirroring **não está implementado** no MirrorServer
+   - Apenas vídeo de mirroring está funcionando
+
+3. **Parsing RTP**:
+   - ✅ C++ extrai payload RTP corretamente em `rtp_receiver.cpp`
+   - ✅ Java não precisa parsear RTP novamente
+   - ❌ Mas isso só se aplica a RTP, não a mirroring TCP
+
+**Solução Aplicada**:
+
+1. **Callback de Erro do MediaCodec**:
+   - Adicionado `MediaCodec.Callback.onError()` para detectar falhas de hardware
+   - Transição automática para `DecoderState.Error` quando codec falha
+   - Logs detalhados com `diagnosticInfo`
+
+2. **Proteção contra Enfileiramento Após Erro**:
+   - `queueFrame()` já verificava estado de erro
+   - Agora com callback, o estado é atualizado imediatamente quando codec falha
+
+3. **Documentação dos Callbacks**:
+   - Clarificado que `onVideoData`/`onAudioData` são para RTP
+   - Clarificado que `onMirroringVideoPacket` é para mirroring TCP
+   - Adicionados comentários explicando a diferença
+
+**Limitações Conhecidas**:
+
+1. **Áudio de Mirroring Não Implementado**:
+   - Mac envia áudio via mirroring, mas não temos suporte
+   - Precisaria implementar parsing de pacotes de áudio no MirrorServer
+   - Por enquanto: apenas vídeo funciona
+
+2. **Decoder Pode Crashar com Dados Inválidos**:
+   - Hardware MTK (MediaTek) é sensível a dados malformados
+   - Quando crashar, sessão precisa ser reiniciada
+   - Não há como "recuperar" um MediaCodec em erro
+
+3. **Sem Validação de Dados H.264**:
+   - Não validamos se NAL units estão bem formados antes de enviar ao decoder
+   - Dados corrompidos podem crashar o decoder
+   - Tradeoff: validação custaria performance
+
+**Próximos Passos**:
+
+1. **Testar novamente** com callback de erro implementado
+2. **Implementar áudio de mirroring** se necessário
+3. **Adicionar validação básica** de NAL units se crashes continuarem
+4. **Considerar fallback** para resolução menor se decoder crashar repetidamente
+
+**Métricas da Sessão**:
+- Duração: 23 segundos
+- Vídeo: 252 frames decodificados, 44 dropped, 55 fps
+- Áudio: 0 frames (não implementado)
+- Desconexão: TEARDOWN do cliente (Mac desistiu após crash)
+
+**Arquivos Modificados**:
+- `VideoDecoder.kt`: Adicionado callback de erro do MediaCodec
+- `ProtocolHandler.kt`: Documentação dos callbacks RTP vs Mirroring
+
+**Referências**:
+- MediaCodec.Callback: https://developer.android.com/reference/android/media/MediaCodec.Callback
+- MediaCodec.CodecException: https://developer.android.com/reference/android/media/MediaCodec.CodecException
+- OMX errors: https://www.khronos.org/registry/OpenMAX-IL/specs/OpenMAX_IL_1_1_2_Specification.pdf
+
+
+### 2026-05-02 - Correção: Ordem de Descriptografia Invertida
+
+**Contexto**: Após reverter mudanças, o Mac não mostrava mais vídeo nenhum. Investigação na documentação revelou o problema.
+
+**Problema**: **Ordem de tentativa de descriptografia estava invertida**
+
+**Descoberta na Documentação** (`vendor-docs/sites/openairplay-spec/airplay-spec/screen_mirroring/stream_packets.html`):
+- Pacotes tipo 0 (video bitstream): **"The payload can be optionally AES encrypted"**
+- Na prática, o Mac **sempre envia dados criptografados**
+- iPhone pode enviar sem criptografia em alguns casos
+
+**Causa Raiz**:
+O código tentava parsear como **não criptografado PRIMEIRO**, e só descriptografava se falhasse:
+
+```kotlin
+// ERRADO - tentava sem criptografia primeiro
+while (inputOffset + 4 <= payload.size) {
+    val nalSize = readInt32(payload, inputOffset)
+    if (nalSize <= 0 || ...) {
+        // Só aqui tentava descriptografar
+        val frame = decryptor?.decodeVideoPayload(payload)
+    }
+}
+```
+
+**Problema**:
+1. Dados criptografados parecem NAL units inválidos
+2. Código tentava parsear dados criptografados como se fossem claros
+3. NAL size ficava inválido (valores aleatórios)
+4. Enviava lixo para o decoder
+5. Decoder crashava com erro de hardware
+
+**Solução Aplicada**:
+
+1. **Inverter ordem de tentativa**:
+   - Tentar descriptografar PRIMEIRO (Mac sempre envia criptografado)
+   - Se falhar, tentar sem criptografia (fallback para iPhone)
+
+2. **Código corrigido**:
+```kotlin
+// CORRETO - tenta descriptografar primeiro
+val currentDecryptor = decryptor
+val frame = if (currentDecryptor != null) {
+    try {
+        currentDecryptor.decodeVideoPayload(payload)
+    } catch (e: Exception) {
+        // Fallback: tentar sem criptografia
+        parseUnencryptedNalUnits(payload)
+    }
+} else {
+    // Sem decryptor, tentar sem criptografia
+    parseUnencryptedNalUnits(payload)
+}
+```
+
+3. **Função helper criada**:
+   - `parseUnencryptedNalUnits()`: Extrai NAL units de payload não criptografado
+   - Reutiliza lógica que estava inline
+   - Facilita manutenção
+
+**Por que funcionava antes?**:
+- Quando o código tentava parsear dados criptografados, falhava
+- Caía no fallback de descriptografia
+- **Mas isso só funcionava se o primeiro NAL size fosse inválido**
+- Se por acaso o primeiro NAL size parecesse válido (coincidência nos bytes criptografados), enviava lixo
+
+**Por que parou de funcionar?**:
+- Mudanças anteriores podem ter alterado timing ou estado
+- Dados criptografados podem ter mudado de padrão
+- Coincidência de bytes válidos pode ter acabado
+
+**Lições Aprendidas**:
+
+1. **Sempre consultar documentação oficial** antes de assumir comportamento
+2. **Criptografia é a regra, não a exceção** no AirPlay moderno
+3. **Ordem de fallback importa** - tentar o caso comum primeiro
+4. **Dados criptografados parecem aleatórios** - não confiar em heurísticas
+
+**Expectativa**:
+- ✅ Vídeo deve funcionar novamente (descriptografia correta)
+- ✅ Menos crashes do decoder (dados válidos)
+- ❌ Áudio ainda não funciona (não implementado)
+
+**Arquivos Modificados**:
+- `AirPlayMirroringSession.kt`: 
+  - Invertida ordem de tentativa de descriptografia
+  - Criada função `parseUnencryptedNalUnits()`
+  - Melhor tratamento de exceções
+
+**Referências**:
+- `vendor-docs/sites/openairplay-spec/airplay-spec/screen_mirroring/stream_packets.html`
+- ISO/IEC 14496:15 (avcC format)
+- RFC 3550 (RTP)

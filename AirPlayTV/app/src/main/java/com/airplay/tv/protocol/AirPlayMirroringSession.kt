@@ -70,45 +70,29 @@ class AirPlayMirroringSession(
         val timestamp90Khz = ((System.nanoTime() / 1_000L) * 90L) / 1_000_000L
         when (payloadType) {
             0 -> {
-                // Try WITHOUT decryption first - payload might not be encrypted
-                // Try to parse as NAL units directly (4 bytes size + NAL data)
-                var inputOffset = 0
-                var outputOffset = 0
-                val output = ByteArray(payload.size * 2)
-                var nalCount = 0
-                
-                while (inputOffset + 4 <= payload.size) {
-                    val nalSize = ((payload[inputOffset].toInt() and 0xFF) shl 24) or
-                                  ((payload[inputOffset + 1].toInt() and 0xFF) shl 16) or
-                                  ((payload[inputOffset + 2].toInt() and 0xFF) shl 8) or
-                                  (payload[inputOffset + 3].toInt() and 0xFF)
-                    
-                    if (nalSize <= 0 || inputOffset + 4 + nalSize > payload.size) {
-                        if (nalCount == 0) {
-                            // Fall back to decryption
-                            val frame = decryptor?.decodeVideoPayload(payload)
-                            if (frame != null && frame.isNotEmpty()) {
-                                queueMirroringFrame(frame, timestamp90Khz)
-                            }
-                        }
-                        break
+                // Type 0: Video bitstream (can be AES encrypted)
+                // Try decryption FIRST (Mac usually sends encrypted data)
+                val currentDecryptor = decryptor
+                val frame = if (currentDecryptor != null) {
+                    try {
+                        currentDecryptor.decodeVideoPayload(payload)
+                    } catch (e: Exception) {
+                        Logger.w(Logger.TAG_PROTOCOL, "Decryption failed, trying unencrypted: ${e.message}")
+                        // Fallback: try parsing as unencrypted NAL units
+                        parseUnencryptedNalUnits(payload)
                     }
-
-                    ANNEX_B_START_CODE.copyInto(output, outputOffset)
-                    outputOffset += ANNEX_B_START_CODE.size
-                    payload.copyInto(output, outputOffset, inputOffset + 4, inputOffset + 4 + nalSize)
-                    outputOffset += nalSize
-                    inputOffset += 4 + nalSize
-                    nalCount++
+                } else {
+                    // No decryptor available, try parsing as unencrypted
+                    parseUnencryptedNalUnits(payload)
                 }
-                if (nalCount > 0) {
-                    val frame = output.copyOf(outputOffset)
+                
+                if (frame != null && frame.isNotEmpty()) {
                     queueMirroringFrame(frame, timestamp90Khz)
                 }
             }
 
             1 -> {
-                // Codec config (SPS/PPS) - NOT encrypted
+                // Type 1: Codec config (SPS/PPS) - NOT encrypted
                 // Extract SPS and PPS and configure decoder
                 val codecData = extractCodecConfigData(payload)
                 if (codecData != null) {
@@ -122,6 +106,12 @@ class AirPlayMirroringSession(
                 } else {
                     Logger.w(Logger.TAG_PROTOCOL, "Failed to extract codec config from type 1 packet")
                 }
+            }
+            
+            2 -> {
+                // Type 2: Heartbeat (sent every second, no payload)
+                // Just acknowledge it to keep connection alive
+                Logger.d(Logger.TAG_PROTOCOL, "Received heartbeat packet")
             }
 
             5 -> {
@@ -142,6 +132,39 @@ class AirPlayMirroringSession(
             else -> {
             }
         }
+    }
+    
+    /**
+     * Parse unencrypted NAL units (4-byte size + NAL data format)
+     */
+    private fun parseUnencryptedNalUnits(payload: ByteArray): ByteArray? {
+        var inputOffset = 0
+        var outputOffset = 0
+        val output = ByteArray(payload.size * 2)
+        var nalCount = 0
+        
+        while (inputOffset + 4 <= payload.size) {
+            val nalSize = ((payload[inputOffset].toInt() and 0xFF) shl 24) or
+                          ((payload[inputOffset + 1].toInt() and 0xFF) shl 16) or
+                          ((payload[inputOffset + 2].toInt() and 0xFF) shl 8) or
+                          (payload[inputOffset + 3].toInt() and 0xFF)
+            
+            if (nalSize <= 0 || inputOffset + 4 + nalSize > payload.size) {
+                if (nalCount == 0) {
+                    Logger.w(Logger.TAG_PROTOCOL, "Invalid NAL size in unencrypted payload: $nalSize")
+                }
+                break
+            }
+
+            ANNEX_B_START_CODE.copyInto(output, outputOffset)
+            outputOffset += ANNEX_B_START_CODE.size
+            payload.copyInto(output, outputOffset, inputOffset + 4, inputOffset + 4 + nalSize)
+            outputOffset += nalSize
+            inputOffset += 4 + nalSize
+            nalCount++
+        }
+        
+        return if (nalCount > 0) output.copyOf(outputOffset) else null
     }
 
     private fun buildInitialSetupResponse(root: NSDictionary): ByteArray? {
