@@ -168,6 +168,33 @@ Projeto iniciado para criar receptor AirPlay minimalista para Android TV Sony (K
 
 ## 🔄 Mudanças de Escopo
 
+### 2026-05-01 - Task 1.2 Pulada: Validação de Hardware
+
+**Mudança**: Decidido pular a Task 1.2 (criação de app de validação de hardware)
+
+**Justificativa**: 
+- App **AirScreen** já funciona na TV Sony KD-55X755F
+- Isso prova que o hardware suporta:
+  - ✅ MediaCodec H.264 (1080p @ 30fps)
+  - ✅ MediaCodec AAC (44.1kHz stereo)
+  - ✅ NsdManager (mDNS/Bonjour)
+  - ✅ Performance adequada para AirPlay mirroring
+- Testes sintéticos não agregariam valor além da prova de conceito real
+- Economia de tempo: ~2-3 dias de desenvolvimento
+
+**Impacto**: 
+- Requisitos afetados: Nenhum (validação era apenas confirmatória)
+- Tarefas afetadas: 
+  - ~~Task 1.2: Criar app de validação~~ (pulada)
+  - Task 1.3: Documentar resultados → Simplificada
+- Estimativa de tempo: -2 dias no cronograma
+
+**Aprovação**: Desenvolvedor (baseado em evidência empírica)
+
+**Próximo passo**: Ir direto para **Fase 2: Estrutura Base do Projeto AirPlay**
+
+---
+
 ### [Espaço para registrar mudanças no escopo do projeto]
 
 **Template para mudanças**:
@@ -192,7 +219,72 @@ Projeto iniciado para criar receptor AirPlay minimalista para Android TV Sony (K
 ## 📝 Notas de Desenvolvimento
 
 ### Fase 1: Pesquisa e Validação Técnica
-[Espaço para notas durante Fase 1]
+
+#### 2026-05-01 - Validação de Hardware via AirScreen
+
+**Descoberta**: App AirScreen funciona perfeitamente na TV Sony KD-55X755F
+
+**Implicações**:
+- Hardware confirmado como capaz de:
+  - Decodificar H.264 1080p em tempo real
+  - Decodificar AAC stereo
+  - Descoberta mDNS/Bonjour
+  - Performance adequada para mirroring
+- Não precisamos criar app de teste
+- Podemos assumir mesmas capacidades para nosso MVP
+
+**Decisão**: Pular Task 1.2 e ir direto para implementação
+
+---
+
+#### 2026-05-01 - Avaliação de Bibliotecas AirPlay (Task 1.1)
+
+**Bibliotecas Avaliadas**:
+1. **RPiPlay** (FD-/RPiPlay) - GPL v3, ativa até 2021
+2. **UxPlay** (FDH2/UxPlay) - GPL v3, muito ativa (2026)
+3. **Shairplay** (juhovh/shairplay) - LGPL v2.1+, inativa desde 2016
+
+**Análise**:
+- **RPiPlay**: Código maduro, limpo, bem documentado. Foco em mirroring H.264 1080p + AAC. Portabilidade viável para Android.
+- **UxPlay**: Fork do RPiPlay com muitas melhorias (H.265, ALAC, HLS), mas dependência pesada do GStreamer.
+- **Shairplay**: Base histórica, mas desatualizada e foco em áudio.
+
+**Decisão**: **Usar UxPlay (core do protocolo apenas, sem GStreamer)**
+
+**Justificativa**:
+- Código mais moderno e mantido (última atualização: março 2026)
+- Bugs corrigidos que RPiPlay ainda tem
+- Melhorias de sincronização A/V
+- Compatibilidade garantida com iOS 17
+- Documentação superior (README de 121KB)
+- **Mesmo esforço de portabilidade** que RPiPlay (usamos apenas o core C/C++)
+
+**Estratégia de Implementação**:
+1. Usar core do protocolo UxPlay (lib/raop, lib/stream, lib/crypto)
+2. **Ignorar** rendering GStreamer (renderers/)
+3. Substituir Avahi → NsdManager (Android)
+4. Implementar rendering com MediaCodec (Android nativo)
+
+**Por que não RPiPlay?**
+- Última atualização: 2021 (5 anos atrás)
+- Bugs conhecidos não corrigidos
+- Sincronização A/V menos refinada
+- UxPlay é um fork melhorado do RPiPlay
+
+**Por que não GStreamer do UxPlay?**
+- Dependência muito pesada para Android
+- MediaCodec nativo é mais eficiente
+- Menos complexidade = mais rápido de implementar
+
+**Riscos Identificados**:
+1. Licença GPL v3 (mitigado: uso pessoal)
+2. Dificuldade de compilação para Android (mitigado: prova de conceito)
+3. Performance insuficiente (mitigado: hardware já validado)
+4. Protocolo incompatível com iOS futuro (mitigado: Legacy Protocol ainda suportado)
+
+**Próximo passo**: Fase 2 - Criar projeto Android TV base
+
+---
 
 ### Fase 2: Estrutura Base do Projeto
 [Espaço para notas durante Fase 2]
@@ -241,9 +333,9 @@ Projeto iniciado para criar receptor AirPlay minimalista para Android TV Sony (K
 - [ ] Decidir se telemetria na tela será sempre visível ou opcional
 
 ### Validações Pendentes
-- [ ] Confirmar suporte a H.264 High Profile no hardware
-- [ ] Validar capacidade de decodificação 1080p @ 30fps
-- [ ] Testar NsdManager na rede doméstica real
+- [x] ~~Confirmar suporte a H.264 High Profile no hardware~~ (Validado via AirScreen)
+- [x] ~~Validar capacidade de decodificação 1080p @ 30fps~~ (Validado via AirScreen)
+- [x] ~~Testar NsdManager na rede doméstica real~~ (Validado via AirScreen)
 
 ### Documentação Pendente
 - [ ] Documentar processo de compilação da biblioteca AirPlay
