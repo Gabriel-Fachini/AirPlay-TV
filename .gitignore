@@ -1,26 +1,136 @@
-# macOS
-.DS_Store
+# Built application files
+*.apk
+*.aar
+*.ap_
+*.aab
 
-# IntelliJ / Android Studio
-.idea/
-*.iml
+# Files for the ART/Dalvik VM
+*.dex
 
-# Gradle
+# Java class files
+*.class
+
+# Generated files
+bin/
+gen/
+out/
+release/
+
+# Gradle files
 .gradle/
 build/
+gradle-app.setting
+!gradle-wrapper.jar
 
-# Android
+# Local configuration file (sdk path, etc)
 local.properties
-captures/
+
+# Android Studio
+*.iml
+.idea/
+.DS_Store
+/captures
+.externalNativeBuild
+.cxx
+
+# NDK
+obj/
+.externalNativeBuild/
 .cxx/
 
-# Kotlin
-out/
+# IntelliJ
+*.iml
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/gradle.xml
+.idea/assetWizardSettings.xml
+.idea/dictionaries
+.idea/libraries
+.idea/jarRepositories.xml
+.idea/compiler.xml
+.idea/misc.xml
+.idea/modules.xml
+.idea/navEditor.xml
+.idea/caches
+.idea/modules
+.idea/vcs.xml
 
-# Signing
+# Keystore files
 *.jks
 *.keystore
-keystore.properties
 
-# Logs
+# External native build folder generated in Android Studio 2.2 and later
+.externalNativeBuild
+
+# Google Services (e.g. APIs or Firebase)
+google-services.json
+
+# Freeline
+freeline.py
+freeline/
+freeline_project_description.json
+
+# fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+fastlane/test_output
+fastlane/readme.md
+
+# Version control
+vcs.xml
+
+# Lint
+lint/intermediates/
+lint/generated/
+lint/outputs/
+lint/tmp/
+lint-results.html
+lint-results.xml
+
+# Android Profiling
+*.hprof
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Thumbnails
+Thumbs.db
+
+# Backup files
+*~
+*.swp
+*.bak
+*.tmp
+*.orig
+
+# Log files
 *.log
+
+# Package Files
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+
+# CMake
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+
+# ADB
+adb.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Keep important config files
+!gradle-wrapper.jar
+!.kiro/
