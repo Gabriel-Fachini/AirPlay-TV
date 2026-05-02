@@ -58,6 +58,7 @@ class mDNSModule(private val context: Context) {
         _serviceState.value = ServiceState.Registering
         
         // Configurar NsdServiceInfo
+        val deviceId = generateDeviceId()
         serviceInfo = NsdServiceInfo().apply {
             serviceName = deviceName
             serviceType = Constants.MDNS_SERVICE_TYPE
@@ -71,14 +72,20 @@ class mDNSModule(private val context: Context) {
             setAttribute("vv", Constants.AIRPLAY_VERSION)
             
             // Informações adicionais
-            setAttribute("deviceid", generateDeviceId())
+            setAttribute("deviceid", deviceId)
             setAttribute("flags", "0x4")  // Suporta mirroring
             setAttribute("pi", "")  // Sem PIN (vazio = sem autenticação)
             setAttribute("pk", "")  // Sem chave pública
             setAttribute("psi", "00000000-0000-0000-0000-000000000000")  // Protocol State Info
             setAttribute("gid", "00000000-0000-0000-0000-000000000000")  // Group ID
             
-            Logger.d(Logger.TAG_MDNS, "TXT records configured: model=${Constants.AIRPLAY_MODEL}, features=${Constants.AIRPLAY_FEATURES}")
+            Logger.i(Logger.TAG_MDNS, "TXT records configured:")
+            Logger.i(Logger.TAG_MDNS, "  model=${Constants.AIRPLAY_MODEL}")
+            Logger.i(Logger.TAG_MDNS, "  features=${Constants.AIRPLAY_FEATURES}")
+            Logger.i(Logger.TAG_MDNS, "  srcvers=${Constants.AIRPLAY_SRC_VERSION}")
+            Logger.i(Logger.TAG_MDNS, "  vv=${Constants.AIRPLAY_VERSION}")
+            Logger.i(Logger.TAG_MDNS, "  deviceid=$deviceId")
+            Logger.i(Logger.TAG_MDNS, "  flags=0x4")
         }
         
         // Criar listener de registro

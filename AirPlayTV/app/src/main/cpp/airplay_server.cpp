@@ -269,23 +269,34 @@ bool AirPlayServer::handleRTSPRequest(int socket, const std::string& request) {
     }
 
     std::string cseq = rtspHandler_->extractHeader(request, "CSeq");
+    std::string userAgent = rtspHandler_->extractHeader(request, "User-Agent");
+    
+    // Log request details for debugging iPhone connection issues
+    LOGI("RTSP Request: %s (CSeq: %s, User-Agent: %s)", 
+         request.substr(0, request.find('\r')).c_str(), 
+         cseq.c_str(), 
+         userAgent.empty() ? "unknown" : userAgent.c_str());
     
     if (request.rfind("GET /info", 0) == 0) {
         handleInfo(socket, cseq);
         notifyActivity("GET /info");
     } else if (request.find("POST /pair-setup") != std::string::npos) {
+        LOGI("Handling pair-setup request");
         handlePairSetup(socket, cseq, request);
         notifyActivity("POST /pair-setup");
     } else if (request.find("POST /pair-verify") != std::string::npos) {
+        LOGI("Handling pair-verify request");
         handlePairVerify(socket, cseq, request);
         notifyActivity("POST /pair-verify");
     } else if (request.find("POST /fp-setup") != std::string::npos) {
+        LOGI("Handling fp-setup request");
         handleFairPlaySetup(socket, cseq, request);
         notifyActivity("POST /fp-setup");
     } else if (request.find("OPTIONS") == 0) {
         handleOptions(socket, cseq);
         notifyActivity("OPTIONS");
     } else if (request.find("SETUP") == 0) {
+        LOGI("Handling SETUP request");
         handleSetup(socket, cseq, request);
         notifyActivity("SETUP");
     } else if (request.find("GET_PARAMETER") == 0) {
@@ -298,14 +309,16 @@ bool AirPlayServer::handleRTSPRequest(int socket, const std::string& request) {
         handleFeedback(socket, cseq);
         notifyActivity("FEEDBACK");
     } else if (request.find("RECORD") == 0) {
+        LOGI("Handling RECORD request");
         handleRecord(socket, cseq);
         notifyActivity("RECORD");
     } else if (request.find("TEARDOWN") == 0) {
+        LOGI("Handling TEARDOWN request");
         handleTeardown(socket, cseq);
         notifyActivity("TEARDOWN");
         return false; // Close connection
     } else {
-        LOGW("Unknown RTSP method: %s", request.substr(0, 50).c_str());
+        LOGW("Unknown RTSP method: %s", request.substr(0, 100).c_str());
         return false;
     }
 
