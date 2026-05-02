@@ -1,120 +1,98 @@
 package com.airplay.tv.ui.components
 
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 
-/**
- * Tela de Startup: inicialização do servidor AirPlay
- * Exibida enquanto o serviço está sendo iniciado
- */
 @Composable
 fun StartupScreen() {
-    // Animação de pulsação para o ícone
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val infiniteTransition = rememberInfiniteTransition(label = "startup")
     val scale by infiniteTransition.animateFloat(
-        initialValue = 0.9f,
-        targetValue = 1.1f,
+        initialValue = 0.94f,
+        targetValue = 1.08f,
         animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = FastOutSlowInEasing),
+            animation = tween(1600, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "scale"
     )
-    
-    // Animação de fade para o texto
     val alpha by infiniteTransition.animateFloat(
-        initialValue = 0.5f,
+        initialValue = 0.58f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(1000, easing = LinearEasing),
+            animation = tween(1100, easing = LinearEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "alpha"
     )
-    
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                brush = Brush.verticalGradient(
-                    colors = listOf(
-                        Color(0xFF000000),
-                        Color(0xFF0D47A1).copy(alpha = 0.2f),
-                        Color(0xFF000000)
-                    )
-                )
-            )
-            .padding(64.dp),
-        contentAlignment = Alignment.Center
+
+    AirPlayBackdrop(
+        topRightContent = { AirPlayTopBadge(text = "Inicializando receptor") }
     ) {
         Column(
+            modifier = Modifier.align(Alignment.Center),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-            modifier = Modifier.fillMaxWidth()
+            verticalArrangement = Arrangement.Center
         ) {
-            // Logo/Ícone AirPlay com animação
-            Text(
-                text = "📱",
-                fontSize = 120.sp,
-                modifier = Modifier
-                    .scale(scale)
-                    .padding(bottom = 48.dp)
-            )
-            
-            // Título
-            Text(
-                text = "AirPlay TV",
-                fontSize = 64.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color.White,
-                textAlign = TextAlign.Center,
-                letterSpacing = 2.sp
-            )
-            
-            Spacer(modifier = Modifier.height(24.dp))
-            
-            // Subtítulo
-            Text(
-                text = "Receptor AirPlay para Android TV",
-                fontSize = 28.sp,
-                fontWeight = FontWeight.Light,
-                color = Color.White.copy(alpha = 0.7f),
-                textAlign = TextAlign.Center
-            )
-            
-            Spacer(modifier = Modifier.height(64.dp))
-            
-            // Spinner
-            CircularProgressIndicator(
-                modifier = Modifier.size(64.dp),
-                color = Color(0xFF2196F3),
-                strokeWidth = 6.dp
-            )
-            
-            Spacer(modifier = Modifier.height(24.dp))
-            
-            // Texto de carregamento com animação
-            Text(
-                text = "Iniciando servidor...",
-                fontSize = 24.sp,
-                fontWeight = FontWeight.Medium,
-                color = Color.White.copy(alpha = alpha),
-                textAlign = TextAlign.Center
-            )
+            AirPlayGlassCard(
+                modifier = Modifier.width(700.dp)
+            ) {
+                Column(
+                    modifier = Modifier.align(Alignment.Center),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier
+                            .size(72.dp)
+                            .scale(scale),
+                        color = AirPlayBlue300,
+                        strokeWidth = 6.dp
+                    )
+
+                    Text(
+                        text = "Preparando o AirPlay Receiver",
+                        style = MaterialTheme.typography.displaySmall,
+                        color = Color.White,
+                        textAlign = TextAlign.Center,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Text(
+                        text = "Iniciando anuncio de rede, servidor RTSP e pipeline do app.",
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = AirPlayWhiteSoft.copy(alpha = alpha),
+                        textAlign = TextAlign.Center
+                    )
+
+                    StatusPill(
+                        label = "BOOTSTRAP",
+                        color = AirPlayBlue500
+                    )
+                }
+            }
         }
     }
 }

@@ -1,112 +1,106 @@
 package com.airplay.tv.ui.components
 
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.airplay.tv.R
 
-/**
- * Tela de estado Connecting: estabelecendo conexão
- * Design refinado com animação sutil
- */
 @Composable
 fun ConnectingScreen(clientIp: String) {
-    // Animação de pulsação sutil
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val infiniteTransition = rememberInfiniteTransition(label = "connecting")
     val scale by infiniteTransition.animateFloat(
         initialValue = 1f,
-        targetValue = 1.05f,
+        targetValue = 1.08f,
         animationSpec = infiniteRepeatable(
-            animation = tween(1000, easing = FastOutSlowInEasing),
+            animation = tween(1100, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "scale"
+        label = "pulse"
     )
-    
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        Color(0xFF1A237E).copy(alpha = 0.3f),
-                        Color(0xFF000000)
-                    )
-                )
-            )
-            .padding(64.dp),
-        contentAlignment = Alignment.Center
+
+    AirPlayBackdrop(
+        topRightContent = { AirPlayTopBadge(text = "Conexao em andamento") }
     ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-            modifier = Modifier.fillMaxWidth()
+        Row(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .width(1220.dp),
+            horizontalArrangement = Arrangement.spacedBy(34.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            // Spinner com animação
-            CircularProgressIndicator(
+            Column(
+                modifier = Modifier.width(430.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                StatusPill(label = "NEGOCIANDO", color = AirPlayBlue500)
+                Text(
+                    text = "Conectando o dispositivo",
+                    style = MaterialTheme.typography.displayMedium,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "A TV ja recebeu a tentativa de conexao e esta finalizando o handshake AirPlay.",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = AirPlayWhiteSoft
+                )
+            }
+
+            AirPlayGlassCard(
                 modifier = Modifier
-                    .size(96.dp)
-                    .scale(scale),
-                color = Color(0xFF2196F3),
-                strokeWidth = 8.dp
-            )
-            
-            Spacer(modifier = Modifier.height(48.dp))
-            
-            // Card com informações
-            Box(
-                modifier = Modifier
-                    .background(
-                        color = Color.White.copy(alpha = 0.05f),
-                        shape = RoundedCornerShape(16.dp)
-                    )
-                    .padding(horizontal = 48.dp, vertical = 32.dp)
+                    .width(700.dp)
+                    .height(370.dp)
             ) {
                 Column(
+                    modifier = Modifier.align(Alignment.Center),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    // Título
+                    CircularProgressIndicator(
+                        modifier = Modifier
+                            .size(78.dp)
+                            .scale(scale),
+                        color = AirPlayBlue300,
+                        strokeWidth = 7.dp
+                    )
                     Text(
-                        text = stringResource(R.string.state_connecting_title),
-                        fontSize = 48.sp,
-                        fontWeight = FontWeight.Bold,
+                        text = "Aguardando confirmacao do cliente",
+                        style = MaterialTheme.typography.displaySmall,
                         color = Color.White,
-                        textAlign = TextAlign.Center
+                        textAlign = TextAlign.Center,
+                        fontWeight = FontWeight.Bold
                     )
-                    
-                    // Subtítulo
-                    Text(
-                        text = stringResource(R.string.state_connecting_subtitle),
-                        fontSize = 28.sp,
-                        fontWeight = FontWeight.Light,
-                        color = Color.White.copy(alpha = 0.8f),
-                        textAlign = TextAlign.Center
-                    )
-                    
-                    Spacer(modifier = Modifier.height(8.dp))
-                    
-                    // IP do cliente
                     Text(
                         text = clientIp,
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = Color(0xFF2196F3),
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = AirPlayBlue300,
+                        textAlign = TextAlign.Center
+                    )
+                    Text(
+                        text = "Assim que o espelhamento iniciar, o video sera exibido em tela cheia.",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = AirPlayWhiteMuted,
                         textAlign = TextAlign.Center
                     )
                 }

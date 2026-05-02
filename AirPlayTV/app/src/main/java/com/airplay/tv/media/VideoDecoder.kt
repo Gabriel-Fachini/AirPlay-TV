@@ -101,6 +101,8 @@ class VideoDecoder(
     private var currentFps = 0
     private var submittedInputFrames = 0L
     private var sessionStartTimeUs = 0L  // Tempo de início da sessão (para cálculo de latência)
+    private var bytesSubmittedSinceLastBitrateSample = 0L
+    private var lastBitrateSampleTimeMs = System.currentTimeMillis()
     
     // Monitoramento de performance
     private var lowFpsCounter = 0
@@ -439,6 +441,8 @@ class VideoDecoder(
                 if (frame.isKeyFrame) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
             )
             submittedInputFrames++
+            bytesSubmittedSinceLastBitrateSample += frame.data.size.toLong()
+            updateBitrateIfNeeded()
             if (submittedInputFrames <= 3L) {
                 Logger.i(
                     Logger.TAG_VIDEO,
@@ -504,7 +508,8 @@ class VideoDecoder(
                 telemetryCollector.updateVideoMetrics(
                     fps = currentFps,
                     latencyMs = latencyMs.toInt(),
-                    droppedFrames = framesDropped.toInt()
+                    droppedFrames = framesDropped.toInt(),
+                    totalFrames = (framesDecoded + framesDropped).toInt()
                 )
             }
             
@@ -539,6 +544,24 @@ class VideoDecoder(
             // Verificar performance periodicamente
             checkPerformance()
         }
+    }
+
+    private fun updateBitrateIfNeeded() {
+        val now = System.currentTimeMillis()
+        val elapsedMs = now - lastBitrateSampleTimeMs
+        if (elapsedMs < 1000) {
+            return
+        }
+
+        val bitrateMbps = if (elapsedMs > 0) {
+            (bytesSubmittedSinceLastBitrateSample * 8f) / (elapsedMs / 1000f) / 1_000_000f
+        } else {
+            0f
+        }
+
+        telemetryCollector.updateBitrate(bitrateMbps)
+        bytesSubmittedSinceLastBitrateSample = 0L
+        lastBitrateSampleTimeMs = now
     }
     
     /**
@@ -640,7 +663,9 @@ class VideoDecoder(
         fpsCounter = 0
         currentFps = 0
         submittedInputFrames = 0
+        bytesSubmittedSinceLastBitrateSample = 0L
         lastFpsTime = System.currentTimeMillis()
+        lastBitrateSampleTimeMs = lastFpsTime
     }
 
     private fun extractDisplaySize(format: MediaFormat): Pair<Int, Int>? {

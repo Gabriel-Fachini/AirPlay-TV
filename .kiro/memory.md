@@ -89,6 +89,47 @@ Projeto iniciado para criar receptor AirPlay minimalista para Android TV Sony (K
 
 ## 🐛 Problemas Encontrados e Soluções
 
+### 2026-05-02 - Idle screen destacava o nome errado do receptor
+
+**Contexto**: Revisão das views do app, com foco principal na tela Idle exibida na TV.
+
+**Problema**: A tela ociosa mostrava o `deviceName` em destaque visual, mas o nome realmente anunciado pelo `NsdManager` via mDNS aparecia apenas como texto secundário. Na prática, o nome que o usuário precisava procurar na lista AirPlay não ganhava o destaque verde esperado.
+
+**Causa Raiz**: O composable `IdleScreen` usava `deviceName` como headline fixa e tratava `ServiceState.Registered.serviceName` só como detalhe auxiliar, além de usar azul no destaque principal.
+
+**Solução**:
+- priorizar o `serviceName` vindo de `mDNSModule.ServiceState.Registered` como nome principal da tela
+- destacar esse nome em verde
+- unificar `IdleScreen`, `StartupScreen`, `ConnectingScreen` e `ErrorScreen` com uma linguagem visual mais consistente para TV
+- extrair elementos visuais compartilhados para `ScreenChrome.kt`
+
+**Arquivos principais**:
+- `AirPlayTV/app/src/main/java/com/airplay/tv/ui/components/IdleScreen.kt`
+- `AirPlayTV/app/src/main/java/com/airplay/tv/ui/components/ScreenChrome.kt`
+- `AirPlayTV/app/src/main/java/com/airplay/tv/ui/components/StartupScreen.kt`
+- `AirPlayTV/app/src/main/java/com/airplay/tv/ui/components/ConnectingScreen.kt`
+- `AirPlayTV/app/src/main/java/com/airplay/tv/ui/components/ErrorScreen.kt`
+- `AirPlayTV/app/src/main/java/com/airplay/tv/ui/theme/Theme.kt`
+- `AirPlayTV/app/src/main/java/com/airplay/tv/ui/theme/Type.kt`
+
+### 2026-05-02 - Identidade visual das telas alinhada a prototipo editorial azul
+
+**Contexto**: O projeto recebeu um prototipo visual de referencia para definir a cara das telas de `Startup`, `Idle`, `Connecting` e `Error`.
+
+**Direcao visual adotada**:
+- fundo azul com glow e curvas suaves
+- lockup AirPlay no canto superior esquerdo
+- badge contextual no canto superior direito
+- cards translcidos com bordas claras
+- tipografia sans-serif limpa, com titulos grandes e legiveis a distancia
+- tela `Idle` em layout de duas colunas, com hero textual a esquerda e guia de espelhamento a direita
+
+**Implementacao**:
+- `ScreenChrome.kt` passou a concentrar backdrop, lockup da marca, badge superior e glass card
+- `IdleScreen.kt` foi refeita para seguir o layout do prototipo, incluindo card de ajuda e guia de espelhamento
+- `StartupScreen.kt`, `ConnectingScreen.kt` e `ErrorScreen.kt` passaram a usar a mesma familia visual
+- `Theme.kt` e `Type.kt` foram ajustados para acompanhar a paleta e a nova hierarquia tipografica
+
 ### 2026-05-02 - Mirroring conectava mas não decodificava vídeo
 
 **Contexto**: Sessão AirPlay com `SETUP` concluído, `Mirror TCP client connected`, codec config recebido e `MediaCodec` iniciado, porém sem nenhum frame renderizado.

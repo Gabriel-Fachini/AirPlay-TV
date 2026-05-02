@@ -34,6 +34,13 @@ class TelemetryCollector {
     fun updateBitrate(bitrateKbps: Float) {
         _telemetry.value = _telemetry.value.copy(bitrateKbps = bitrateKbps)
     }
+
+    fun updateFrameStats(droppedFrames: Int, totalFrames: Int) {
+        _telemetry.value = _telemetry.value.copy(
+            droppedFrames = droppedFrames,
+            totalFrames = totalFrames
+        )
+    }
     
     fun updateResolution(width: Int, height: Int) {
         _telemetry.value = _telemetry.value.copy(

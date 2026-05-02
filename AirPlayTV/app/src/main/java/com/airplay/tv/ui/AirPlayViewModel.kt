@@ -111,6 +111,18 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
         }
 
         viewModelScope.launch {
+            service.getTelemetry().collect { serviceTelemetry ->
+                telemetryCollector.updateFps(serviceTelemetry.fps.toFloat())
+                telemetryCollector.updateLatency(serviceTelemetry.latencyMs)
+                telemetryCollector.updateBitrate(serviceTelemetry.bitrateMbps * 1000f)
+                telemetryCollector.updateFrameStats(
+                    droppedFrames = serviceTelemetry.droppedFrames,
+                    totalFrames = serviceTelemetry.totalFrames
+                )
+            }
+        }
+
+        viewModelScope.launch {
             service.getVideoOutputSize().collect { videoOutputSize ->
                 if (videoOutputSize.width > 0 && videoOutputSize.height > 0) {
                     telemetryCollector.updateResolution(videoOutputSize.width, videoOutputSize.height)

@@ -19,6 +19,7 @@ class TelemetryCollector {
         val bitrateMbps: Float = 0f,
         val resolution: String = "",
         val droppedFrames: Int = 0,
+        val totalFrames: Int = 0,
         val audioSampleRate: Int = 0,
         val audioChannels: Int = 0,
         val syncDriftMs: Int = 0,
@@ -34,6 +35,7 @@ class TelemetryCollector {
     private var bitrateMbps = 0f
     private var resolution = ""
     private var droppedFrames = 0
+    private var totalFrames = 0
     private var audioSampleRate = 0
     private var audioChannels = 0
     private var syncDriftMs = 0
@@ -42,10 +44,11 @@ class TelemetryCollector {
     /**
      * Atualiza métricas de vídeo
      */
-    fun updateVideoMetrics(fps: Int, latencyMs: Int, droppedFrames: Int) {
+    fun updateVideoMetrics(fps: Int, latencyMs: Int, droppedFrames: Int, totalFrames: Int) {
         this.fps = fps
         this.latencyMs = latencyMs
         this.droppedFrames = droppedFrames
+        this.totalFrames = totalFrames
         emitTelemetry()
     }
     
@@ -100,6 +103,7 @@ class TelemetryCollector {
             bitrateMbps = bitrateMbps,
             resolution = resolution,
             droppedFrames = droppedFrames,
+            totalFrames = totalFrames,
             audioSampleRate = audioSampleRate,
             audioChannels = audioChannels,
             syncDriftMs = syncDriftMs,
@@ -116,6 +120,7 @@ class TelemetryCollector {
         bitrateMbps = 0f
         resolution = ""
         droppedFrames = 0
+        totalFrames = 0
         audioSampleRate = 0
         audioChannels = 0
         syncDriftMs = 0
