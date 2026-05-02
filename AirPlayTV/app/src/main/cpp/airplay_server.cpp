@@ -240,6 +240,10 @@ void AirPlayServer::handleRecord(int socket, const std::string& cseq) {
     send(socket, responseStr.c_str(), responseStr.length(), 0);
     
     LOGI("Sent RECORD response - ready to receive media");
+    
+    // TODO: Iniciar recepção de pacotes RTP em portas UDP
+    // Por enquanto, apenas simulação de callbacks
+    // Em implementação completa, criar sockets UDP para receber RTP
 }
 
 void AirPlayServer::handleTeardown(int socket, const std::string& cseq) {

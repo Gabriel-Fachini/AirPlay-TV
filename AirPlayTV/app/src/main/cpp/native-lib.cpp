@@ -68,6 +68,40 @@ void onErrorCallback(const std::string& error) {
     env->DeleteLocalRef(cls);
 }
 
+void onVideoDataCallback(const uint8_t* data, size_t size, uint32_t timestamp) {
+    JNIEnv* env = getJNIEnv();
+    if (!env || !g_callbackObject) return;
+
+    jclass cls = env->GetObjectClass(g_callbackObject);
+    jmethodID method = env->GetMethodID(cls, "onVideoData", "([BJ)V");
+    
+    if (method) {
+        jbyteArray jData = env->NewByteArray(size);
+        env->SetByteArrayRegion(jData, 0, size, (const jbyte*)data);
+        env->CallVoidMethod(g_callbackObject, method, jData, (jlong)timestamp);
+        env->DeleteLocalRef(jData);
+    }
+    
+    env->DeleteLocalRef(cls);
+}
+
+void onAudioDataCallback(const uint8_t* data, size_t size, uint32_t timestamp) {
+    JNIEnv* env = getJNIEnv();
+    if (!env || !g_callbackObject) return;
+
+    jclass cls = env->GetObjectClass(g_callbackObject);
+    jmethodID method = env->GetMethodID(cls, "onAudioData", "([BJ)V");
+    
+    if (method) {
+        jbyteArray jData = env->NewByteArray(size);
+        env->SetByteArrayRegion(jData, 0, size, (const jbyte*)data);
+        env->CallVoidMethod(g_callbackObject, method, jData, (jlong)timestamp);
+        env->DeleteLocalRef(jData);
+    }
+    
+    env->DeleteLocalRef(cls);
+}
+
 // JNI exports
 extern "C" {
 
@@ -104,6 +138,8 @@ Java_com_airplay_tv_protocol_ProtocolHandler_startRTSPServerNative(
     // Configurar callbacks
     g_server->setConnectionCallback(onConnectionCallback);
     g_server->setDisconnectionCallback(onDisconnectionCallback);
+    g_server->setVideoDataCallback(onVideoDataCallback);
+    g_server->setAudioDataCallback(onAudioDataCallback);
     g_server->setErrorCallback(onErrorCallback);
     
     // Salvar referência ao objeto Java para callbacks
