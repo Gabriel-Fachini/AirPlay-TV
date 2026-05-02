@@ -12,10 +12,16 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Configuração
-TV_IP="${1:-192.168.1.100}"  # IP padrão, pode ser passado como argumento
-TV_PORT="5555"
+TV_TARGET="${1:-192.168.1.100:5555}"  # Aceita IP ou IP:PORTA
+DEFAULT_TV_PORT="5555"
 PACKAGE_NAME="com.airplay.tv"
 APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
+
+if [[ "$TV_TARGET" == *:* ]]; then
+    TV_SERIAL="$TV_TARGET"
+else
+    TV_SERIAL="$TV_TARGET:$DEFAULT_TV_PORT"
+fi
 
 echo -e "${GREEN}=== AirPlay TV - Deploy Script ===${NC}\n"
 
@@ -37,17 +43,17 @@ fi
 echo -e "${GREEN}✓ Compilação concluída${NC}\n"
 
 # Passo 2: Conectar TV
-echo -e "${YELLOW}[2/5] Conectando à TV ($TV_IP:$TV_PORT)...${NC}"
-adb connect "$TV_IP:$TV_PORT" > /dev/null 2>&1
+echo -e "${YELLOW}[2/5] Conectando à TV ($TV_SERIAL)...${NC}"
+adb connect "$TV_SERIAL" > /dev/null 2>&1
 
 # Verificar conexão
-if ! adb devices | grep -q "$TV_IP:$TV_PORT"; then
+if ! adb devices | grep -q "$TV_SERIAL"; then
     echo -e "${RED}Erro: Não foi possível conectar à TV${NC}"
     echo -e "${YELLOW}Dicas:${NC}"
     echo "  - Verifique se a TV está ligada"
     echo "  - Verifique se 'Depuração de rede ADB' está habilitada"
-    echo "  - Verifique se o IP está correto: $TV_IP"
-    echo "  - Tente: adb connect $TV_IP:$TV_PORT"
+    echo "  - Verifique se o IP/porta estão corretos: $TV_SERIAL"
+    echo "  - Tente: adb connect $TV_SERIAL"
     exit 1
 fi
 
@@ -55,12 +61,12 @@ echo -e "${GREEN}✓ Conectado à TV${NC}\n"
 
 # Passo 3: Desinstalar versão antiga (se existir)
 echo -e "${YELLOW}[3/5] Removendo versão anterior...${NC}"
-adb uninstall "$PACKAGE_NAME" > /dev/null 2>&1 || true
+adb -s "$TV_SERIAL" uninstall "$PACKAGE_NAME" > /dev/null 2>&1 || true
 echo -e "${GREEN}✓ Versão anterior removida${NC}\n"
 
 # Passo 4: Instalar nova versão
 echo -e "${YELLOW}[4/5] Instalando APK...${NC}"
-adb install "$APK_PATH"
+adb -s "$TV_SERIAL" install "$APK_PATH"
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}Erro: Falha ao instalar APK${NC}"
@@ -71,7 +77,7 @@ echo -e "${GREEN}✓ APK instalado${NC}\n"
 
 # Passo 5: Iniciar app
 echo -e "${YELLOW}[5/5] Iniciando aplicativo...${NC}"
-adb shell am start -n "$PACKAGE_NAME/.MainActivity"
+adb -s "$TV_SERIAL" shell am start -n "$PACKAGE_NAME/.MainActivity"
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}Erro: Falha ao iniciar app${NC}"
@@ -85,5 +91,5 @@ echo -e "${GREEN}=== Deploy concluído com sucesso! ===${NC}\n"
 echo -e "${YELLOW}Monitorando logs (Ctrl+C para sair)...${NC}\n"
 
 # Limpar logs antigos e mostrar novos
-adb logcat -c
-adb logcat | grep --color=always "AirPlay"
+adb -s "$TV_SERIAL" logcat -c
+adb -s "$TV_SERIAL" logcat | grep --color=always "AirPlay"

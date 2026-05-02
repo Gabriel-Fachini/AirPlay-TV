@@ -48,6 +48,7 @@ class UIStateManager {
     private val allowedTransitions = mapOf(
         UIState.Idle::class to setOf(
             UIState.Connecting::class,
+            UIState.Mirroring::class,
             UIState.Error::class
         ),
         UIState.Connecting::class to setOf(
@@ -70,6 +71,15 @@ class UIStateManager {
     fun transitionTo(newState: UIState) {
         val currentStateClass = _currentState.value::class
         val newStateClass = newState::class
+
+        if (currentStateClass == newStateClass) {
+            Logger.i(
+                Logger.TAG_UI,
+                "State refresh: ${currentStateClass.simpleName}"
+            )
+            _currentState.value = newState
+            return
+        }
         
         val allowed = allowedTransitions[currentStateClass]?.contains(newStateClass) ?: false
         

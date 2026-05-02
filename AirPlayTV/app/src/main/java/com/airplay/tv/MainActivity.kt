@@ -46,9 +46,7 @@ class MainActivity : ComponentActivity() {
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        Logger.i(Logger.TAG_UI, "MainActivity created (versão com botões de teste)")
-        
+
         setContent {
             AirPlayTVTheme {
                 Surface(
@@ -63,27 +61,31 @@ class MainActivity : ComponentActivity() {
     
     override fun onResume() {
         super.onResume()
-        Logger.i(Logger.TAG_UI, "MainActivity resumed")
         viewModel.startService()
     }
     
     override fun onPause() {
         super.onPause()
-        Logger.i(Logger.TAG_UI, "MainActivity paused")
         viewModel.stopService()
     }
     
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        // Interceptar botão BACK durante mirroring
+        // Task 6.1: Interceptar botão BACK durante mirroring
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             val currentState = viewModel.uiState.value
             if (currentState is UIStateManager.UIState.Mirroring) {
                 Logger.i(Logger.TAG_UI, "BACK pressed during mirroring, ending session")
                 viewModel.endSession()
-                return true
+                return true // Consumir evento, não fechar app
             }
         }
         return super.onKeyDown(keyCode, event)
+    }
+    
+    override fun onDestroy() {
+        super.onDestroy()
+        // Task 6.2: Garantir limpeza de recursos ao destruir Activity
+        viewModel.stopService()
     }
 }
 
@@ -114,7 +116,13 @@ fun AirPlayScreenWithTestButtons(viewModel: AirPlayViewModel) {
                 MirroringScreen(
                     clientIp = state.clientIp,
                     resolution = state.resolution,
-                    telemetry = telemetry
+                    telemetry = telemetry,
+                    onSurfaceReady = { surface ->
+                        viewModel.setVideoSurface(surface)
+                    },
+                    onSurfaceReleased = {
+                        viewModel.clearVideoSurface()
+                    }
                 )
             }
             

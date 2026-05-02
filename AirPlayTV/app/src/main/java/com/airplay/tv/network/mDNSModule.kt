@@ -75,6 +75,8 @@ class mDNSModule(private val context: Context) {
             setAttribute("flags", "0x4")  // Suporta mirroring
             setAttribute("pi", "")  // Sem PIN (vazio = sem autenticação)
             setAttribute("pk", "")  // Sem chave pública
+            setAttribute("psi", "00000000-0000-0000-0000-000000000000")  // Protocol State Info
+            setAttribute("gid", "00000000-0000-0000-0000-000000000000")  // Group ID
             
             Logger.d(Logger.TAG_MDNS, "TXT records configured: model=${Constants.AIRPLAY_MODEL}, features=${Constants.AIRPLAY_FEATURES}")
         }

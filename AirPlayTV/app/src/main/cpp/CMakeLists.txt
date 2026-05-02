@@ -15,6 +15,20 @@ add_library(
     SHARED
     native-lib.cpp
     airplay_server.cpp
+    # Protocol modules
+    protocol/protocol_constants.cpp
+    protocol/fairplay_handler.cpp
+    protocol/rtsp_handler.cpp
+    # Network modules
+    network/network_utils.cpp
+    network/rtp_receiver.cpp
+    network/mirror_server.cpp
+    # Third party
+    third_party/playfair/hand_garble.c
+    third_party/playfair/modified_md5.c
+    third_party/playfair/omg_hax.c
+    third_party/playfair/playfair.c
+    third_party/playfair/sap_hash.c
 )
 
 # Bibliotecas do sistema
@@ -31,4 +45,7 @@ target_include_directories(
     airplay-native
     PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/protocol
+    ${CMAKE_CURRENT_SOURCE_DIR}/network
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/playfair
 )

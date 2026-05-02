@@ -11,7 +11,7 @@ object Constants {
     
     // Protocol
     const val AIRPLAY_MODEL = "AppleTV3,2"
-    const val AIRPLAY_FEATURES = "0x5A7FFFF7,0x1E"
+    const val AIRPLAY_FEATURES = "0x427FFFF7,0x1E"  // Sem Authentication_8 (bit 27 desligado)
     const val AIRPLAY_SRC_VERSION = "220.68"
     const val AIRPLAY_VERSION = "2"
     

@@ -91,6 +91,8 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.8.2")
     implementation("androidx.tv:tv-foundation:1.0.0-alpha10")
     implementation("androidx.tv:tv-material:1.0.0-alpha10")
+    implementation("org.bouncycastle:bcprov-jdk15to18:1.78.1")
+    implementation("com.googlecode.plist:dd-plist:1.28")
 
     // Testing
     testImplementation("junit:junit:4.13.2")

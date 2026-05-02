@@ -1,5 +1,6 @@
 #include <jni.h>
 #include <string>
+#include <vector>
 #include <android/log.h>
 #include "airplay_server.h"
 
@@ -49,6 +50,22 @@ void onDisconnectionCallback() {
         env->CallVoidMethod(g_callbackObject, method);
     }
     
+    env->DeleteLocalRef(cls);
+}
+
+void onActivityCallback(const std::string& methodName) {
+    JNIEnv* env = getJNIEnv();
+    if (!env || !g_callbackObject) return;
+
+    jclass cls = env->GetObjectClass(g_callbackObject);
+    jmethodID method = env->GetMethodID(cls, "onControlRequestHandled", "(Ljava/lang/String;)V");
+
+    if (method) {
+        jstring jMethodName = env->NewStringUTF(methodName.c_str());
+        env->CallVoidMethod(g_callbackObject, method, jMethodName);
+        env->DeleteLocalRef(jMethodName);
+    }
+
     env->DeleteLocalRef(cls);
 }
 
@@ -102,6 +119,86 @@ void onAudioDataCallback(const uint8_t* data, size_t size, uint32_t timestamp) {
     env->DeleteLocalRef(cls);
 }
 
+void onMirroringVideoPacketCallback(int payloadType, const uint8_t* data, size_t size) {
+    JNIEnv* env = getJNIEnv();
+    if (!env || !g_callbackObject) return;
+
+    jclass cls = env->GetObjectClass(g_callbackObject);
+    jmethodID method = env->GetMethodID(cls, "onMirroringVideoPacket", "(I[B)V");
+
+    if (method) {
+        jbyteArray jData = env->NewByteArray(static_cast<jsize>(size));
+        env->SetByteArrayRegion(jData, 0, static_cast<jsize>(size), reinterpret_cast<const jbyte*>(data));
+        env->CallVoidMethod(g_callbackObject, method, static_cast<jint>(payloadType), jData);
+        env->DeleteLocalRef(jData);
+    }
+
+    env->DeleteLocalRef(cls);
+}
+
+std::vector<uint8_t> invokeByteArrayCallback(
+        const char* methodName,
+        const uint8_t* data,
+        size_t size,
+        bool* ok) {
+    *ok = false;
+
+    JNIEnv* env = getJNIEnv();
+    if (!env || !g_callbackObject) {
+        LOGE("Cannot invoke %s: missing JNI environment or callback object", methodName);
+        return {};
+    }
+
+    jclass cls = env->GetObjectClass(g_callbackObject);
+    jmethodID method = env->GetMethodID(cls, methodName, "([B)[B");
+    if (!method) {
+        LOGE("Cannot find Java callback %s", methodName);
+        env->DeleteLocalRef(cls);
+        return {};
+    }
+
+    jbyteArray request = env->NewByteArray(static_cast<jsize>(size));
+    if (request == nullptr) {
+        LOGE("Failed to allocate byte array for %s", methodName);
+        env->DeleteLocalRef(cls);
+        return {};
+    }
+
+    env->SetByteArrayRegion(request, 0, static_cast<jsize>(size), reinterpret_cast<const jbyte*>(data));
+    auto response = static_cast<jbyteArray>(env->CallObjectMethod(g_callbackObject, method, request));
+    env->DeleteLocalRef(request);
+
+    if (env->ExceptionCheck()) {
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+        LOGE("Java callback %s threw an exception", methodName);
+        env->DeleteLocalRef(cls);
+        return {};
+    }
+
+    if (response == nullptr) {
+        LOGE("Java callback %s returned null", methodName);
+        env->DeleteLocalRef(cls);
+        return {};
+    }
+
+    std::vector<uint8_t> result;
+    const jsize length = env->GetArrayLength(response);
+    result.resize(static_cast<size_t>(length));
+    if (length > 0) {
+        env->GetByteArrayRegion(
+                response,
+                0,
+                length,
+                reinterpret_cast<jbyte*>(result.data()));
+    }
+    env->DeleteLocalRef(response);
+
+    env->DeleteLocalRef(cls);
+    *ok = true;
+    return result;
+}
+
 // JNI exports
 extern "C" {
 
@@ -138,9 +235,11 @@ Java_com_airplay_tv_protocol_ProtocolHandler_startRTSPServerNative(
     // Configurar callbacks
     g_server->setConnectionCallback(onConnectionCallback);
     g_server->setDisconnectionCallback(onDisconnectionCallback);
+    g_server->setActivityCallback(onActivityCallback);
     g_server->setVideoDataCallback(onVideoDataCallback);
     g_server->setAudioDataCallback(onAudioDataCallback);
     g_server->setErrorCallback(onErrorCallback);
+    g_server->setMirroringVideoPacketCallback(onMirroringVideoPacketCallback);
     
     // Salvar referência ao objeto Java para callbacks
     g_callbackObject = env->NewGlobalRef(thiz);
@@ -234,8 +333,50 @@ Java_com_airplay_tv_protocol_ProtocolHandler_getAudioConfigNative(
         config[1] = g_server->getAudioChannels();
         env->SetIntArrayRegion(result, 0, 2, config);
     }
-    
+
     return result;
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_com_airplay_tv_protocol_ProtocolHandler_decryptFairPlayAesKeyNative(
+        JNIEnv* env,
+        jobject /* this */,
+        jbyteArray encryptedKey) {
+    if (g_server == nullptr || encryptedKey == nullptr) {
+        return nullptr;
+    }
+
+    const jsize length = env->GetArrayLength(encryptedKey);
+    std::vector<uint8_t> input(static_cast<size_t>(length));
+    env->GetByteArrayRegion(
+            encryptedKey,
+            0,
+            length,
+            reinterpret_cast<jbyte*>(input.data()));
+
+    std::vector<uint8_t> output;
+    if (!g_server->decryptFairPlayAesKey(input.data(), input.size(), &output) || output.empty()) {
+        return nullptr;
+    }
+
+    jbyteArray result = env->NewByteArray(static_cast<jsize>(output.size()));
+    env->SetByteArrayRegion(
+            result,
+            0,
+            static_cast<jsize>(output.size()),
+            reinterpret_cast<const jbyte*>(output.data()));
+    return result;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_airplay_tv_protocol_ProtocolHandler_startMirrorVideoServerNative(
+        JNIEnv* /* env */,
+        jobject /* this */) {
+    if (g_server == nullptr) {
+        return -1;
+    }
+
+    return static_cast<jint>(g_server->startMirrorVideoServer());
 }
 
 } // extern "C"

@@ -4,9 +4,13 @@ import com.airplay.tv.media.AudioDecoder
 import com.airplay.tv.media.VideoDecoder
 import com.airplay.tv.util.Constants
 import com.airplay.tv.util.Logger
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import java.nio.ByteBuffer
 
 /**
  * Handler do protocolo AirPlay (RTSP/RTP)
@@ -17,6 +21,17 @@ class ProtocolHandler(
     private val videoDecoder: VideoDecoder? = null,
     private val audioDecoder: AudioDecoder? = null
 ) {
+    private val pairingManager = AirPlayPairingManager()
+    private val mirroringSession = AirPlayMirroringSession(
+        videoDecoder = videoDecoder,
+        pairingManager = pairingManager,
+        decryptFairPlayAesKey = { encryptedKey -> decryptFairPlayAesKeyNative(encryptedKey) },
+        startMirrorVideoServer = { startMirrorVideoServerNative() },
+        onCodecConfigReceived = { sps: ByteBuffer, pps: ByteBuffer, width: Int, height: Int ->
+            // Emit codec config event
+            _codecConfigReceived.tryEmit(CodecConfig(sps, pps, width, height))
+        }
+    )
     
     // Estado da conexão
     sealed class ConnectionState {
@@ -27,6 +42,24 @@ class ProtocolHandler(
     
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Idle)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
+    private val _sessionActivity = MutableSharedFlow<String>(
+        replay = 0,
+        extraBufferCapacity = 32
+    )
+    val sessionActivity: SharedFlow<String> = _sessionActivity.asSharedFlow()
+    
+    // Codec config received event
+    data class CodecConfig(
+        val sps: java.nio.ByteBuffer,
+        val pps: java.nio.ByteBuffer,
+        val width: Int,
+        val height: Int
+    )
+    private val _codecConfigReceived = MutableSharedFlow<CodecConfig>(
+        replay = 0,
+        extraBufferCapacity = 1
+    )
+    val codecConfigReceived: SharedFlow<CodecConfig> = _codecConfigReceived.asSharedFlow()
     
     // Parser RTP
     private val rtpParser = RTPParser()
@@ -58,6 +91,8 @@ class ProtocolHandler(
     private external fun startRTSPServerNative(port: Int): Boolean
     private external fun stopRTSPServerNative()
     private external fun isServerRunningNative(): Boolean
+    private external fun decryptFairPlayAesKeyNative(encryptedKey: ByteArray): ByteArray?
+    private external fun startMirrorVideoServerNative(): Int
     private external fun getClientIpNative(): String
     private external fun getVideoResolutionNative(): IntArray
     private external fun getAudioConfigNative(): IntArray
@@ -166,6 +201,8 @@ class ProtocolHandler(
     private fun onClientDisconnected() {
         Logger.i(Logger.TAG_PROTOCOL, "Client disconnected")
         currentSession = null
+        pairingManager.resetSession()
+        mirroringSession.reset()
         _connectionState.value = ConnectionState.Idle
         
         // Logar estatísticas da sessão
@@ -175,7 +212,35 @@ class ProtocolHandler(
     @Suppress("unused")
     private fun onError(error: String) {
         Logger.e(Logger.TAG_PROTOCOL, "Protocol error: $error")
+        pairingManager.resetSession()
+        mirroringSession.reset()
         _connectionState.value = ConnectionState.Error(error)
+    }
+
+    @Suppress("unused")
+    private fun onControlRequestHandled(method: String) {
+        _sessionActivity.tryEmit(method)
+    }
+
+    @Suppress("unused")
+    private fun onPairSetup(data: ByteArray): ByteArray? {
+        return pairingManager.handlePairSetup(data)
+    }
+
+    @Suppress("unused")
+    private fun onPairVerify(data: ByteArray): ByteArray? {
+        return pairingManager.handlePairVerify(data)
+    }
+
+    @Suppress("unused")
+    private fun onSetupRequest(data: ByteArray): ByteArray? {
+        return mirroringSession.buildSetupResponse(data)
+    }
+
+    @Suppress("unused")
+    private fun onMirroringVideoPacket(payloadType: Int, data: ByteArray) {
+        _sessionActivity.tryEmit("MIRROR_VIDEO")
+        mirroringSession.handleVideoPacket(payloadType, data)
     }
     
     /**
@@ -186,6 +251,7 @@ class ProtocolHandler(
      */
     @Suppress("unused")
     private fun onVideoData(data: ByteArray, timestamp: Long) {
+        _sessionActivity.tryEmit("VIDEO")
         // Parsear pacote RTP
         val packet = rtpParser.parsePacket(data, data.size)
         
@@ -207,6 +273,7 @@ class ProtocolHandler(
      */
     @Suppress("unused")
     private fun onAudioData(data: ByteArray, timestamp: Long) {
+        _sessionActivity.tryEmit("AUDIO")
         // Parsear pacote RTP
         val packet = rtpParser.parsePacket(data, data.size)
         

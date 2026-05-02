@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -11,7 +13,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import android.view.Gravity
+import android.view.Surface
+import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.widget.FrameLayout
 import com.airplay.tv.R
 import com.airplay.tv.util.Constants
 import com.airplay.tv.util.TelemetryCollector
@@ -24,21 +30,78 @@ fun MirroringScreen(
     clientIp: String,
     resolution: String,
     telemetry: TelemetryCollector.Telemetry,
-    onSurfaceViewCreated: (SurfaceView) -> Unit = {}
+    onSurfaceReady: (Surface) -> Unit = {},
+    onSurfaceReleased: () -> Unit = {}
 ) {
+    DisposableEffect(Unit) {
+        onDispose {
+            onSurfaceReleased()
+        }
+    }
+
     Box(
         modifier = Modifier.fillMaxSize()
     ) {
-        // SurfaceView para renderização de vídeo (será usado na Fase 5)
-        AndroidView(
-            factory = { context ->
-                SurfaceView(context).apply {
-                    holder.setFixedSize(1920, 1080)
-                    onSurfaceViewCreated(this)
-                }
-            },
+        val resolvedVideoSize = remember(telemetry.resolutionWidth, telemetry.resolutionHeight, resolution) {
+            if (telemetry.resolutionWidth > 0 && telemetry.resolutionHeight > 0) {
+                Pair(telemetry.resolutionWidth, telemetry.resolutionHeight)
+            } else {
+                parseResolutionLabel(resolution) ?: Pair(1920, 1080)
+            }
+        }
+
+        BoxWithConstraints(
             modifier = Modifier.fillMaxSize()
-        )
+        ) {
+            val videoAspectRatio = resolvedVideoSize.first.toFloat() / resolvedVideoSize.second.toFloat()
+            val containerAspectRatio = maxWidth.value / maxHeight.value
+            val surfaceModifier = if (videoAspectRatio > containerAspectRatio) {
+                Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(videoAspectRatio)
+            } else {
+                Modifier
+                    .fillMaxHeight()
+                    .aspectRatio(videoAspectRatio)
+            }
+
+            AndroidView(
+                factory = { context ->
+                    SurfaceView(context).apply {
+                        holder.addCallback(object : SurfaceHolder.Callback {
+                            override fun surfaceCreated(holder: SurfaceHolder) {
+                                onSurfaceReady(holder.surface)
+                            }
+
+                            override fun surfaceChanged(
+                                holder: SurfaceHolder,
+                                format: Int,
+                                width: Int,
+                                height: Int
+                            ) {
+                                onSurfaceReady(holder.surface)
+                            }
+
+                            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                                onSurfaceReleased()
+                            }
+                        })
+                    }
+                },
+                update = { surfaceView ->
+                    surfaceView.holder.setFixedSize(resolvedVideoSize.first, resolvedVideoSize.second)
+                    (surfaceView.layoutParams as? FrameLayout.LayoutParams)?.apply {
+                        gravity = Gravity.CENTER
+                    }
+                    surfaceView.holder.surface?.let { surface ->
+                        if (surface.isValid) {
+                            onSurfaceReady(surface)
+                        }
+                    }
+                },
+                modifier = surfaceModifier.align(Alignment.Center)
+            )
+        }
         
         // Hint de controle (canto inferior)
         Box(
@@ -64,6 +127,21 @@ fun MirroringScreen(
             )
         }
     }
+}
+
+private fun parseResolutionLabel(resolution: String): Pair<Int, Int>? {
+    val parts = resolution.split("x")
+    if (parts.size != 2) {
+        return null
+    }
+
+    val width = parts[0].trim().toIntOrNull() ?: return null
+    val height = parts[1].trim().toIntOrNull() ?: return null
+    if (width <= 0 || height <= 0) {
+        return null
+    }
+
+    return Pair(width, height)
 }
 
 /**

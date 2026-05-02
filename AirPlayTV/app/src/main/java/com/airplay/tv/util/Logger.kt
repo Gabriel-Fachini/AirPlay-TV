@@ -17,29 +17,38 @@ object Logger {
     
     // Debug
     fun d(tag: String, message: String) {
-        Log.d(tag, message)
+        runSafely { Log.d(tag, message) }
     }
     
     // Info
     fun i(tag: String, message: String) {
-        Log.i(tag, message)
+        runSafely { Log.i(tag, message) }
     }
     
     // Warning
     fun w(tag: String, message: String) {
-        Log.w(tag, message)
+        runSafely { Log.w(tag, message) }
     }
     
     fun w(tag: String, message: String, throwable: Throwable) {
-        Log.w(tag, message, throwable)
+        runSafely { Log.w(tag, message, throwable) }
     }
     
     // Error
     fun e(tag: String, message: String) {
-        Log.e(tag, message)
+        runSafely { Log.e(tag, message) }
     }
     
     fun e(tag: String, message: String, throwable: Throwable) {
-        Log.e(tag, message, throwable)
+        runSafely { Log.e(tag, message, throwable) }
+    }
+
+    private inline fun runSafely(block: () -> Unit) {
+        try {
+            block()
+        } catch (_: Throwable) {
+            // Permite reutilizar a lógica em testes JVM locais, onde android.util.Log
+            // pode lançar exceções dos stubs do Android.
+        }
     }
 }

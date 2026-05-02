@@ -182,24 +182,32 @@ class AudioDecoder {
      */
     fun stop() {
         Logger.i(Logger.TAG_AUDIO, "Stopping audio decoder")
+        _state.value = DecoderState.Idle
         
         decoderJob?.cancel()
         decoderJob = null
         
         try {
-            audioTrack?.stop()
+            try {
+                audioTrack?.stop()
+            } catch (e: IllegalStateException) {
+                Logger.w(Logger.TAG_AUDIO, "AudioTrack already stopped or in invalid state", e)
+            }
             audioTrack?.release()
             audioTrack = null
             
-            codec?.stop()
+            try {
+                codec?.stop()
+            } catch (e: IllegalStateException) {
+                Logger.w(Logger.TAG_AUDIO, "Codec already stopped or in invalid state", e)
+            }
             codec?.release()
             codec = null
         } catch (e: Exception) {
             Logger.e(Logger.TAG_AUDIO, "Error stopping decoder", e)
         }
-        
+
         inputQueue.clear()
-        _state.value = DecoderState.Idle
         
         Logger.i(Logger.TAG_AUDIO, "Audio decoder stopped (decoded=$samplesDecoded, dropped=$samplesDropped)")
     }
@@ -244,6 +252,13 @@ class AudioDecoder {
                 
             } catch (e: CancellationException) {
                 break
+            } catch (e: IllegalStateException) {
+                if (_state.value == DecoderState.Idle || !currentCoroutineContext().isActive) {
+                    break
+                }
+                Logger.e(Logger.TAG_AUDIO, "Error in decoder loop", e)
+                _state.value = DecoderState.Error(e.message ?: "Decoder error")
+                break
             } catch (e: Exception) {
                 Logger.e(Logger.TAG_AUDIO, "Error in decoder loop", e)
                 _state.value = DecoderState.Error(e.message ?: "Decoder error")
@@ -259,13 +274,17 @@ class AudioDecoder {
      */
     private fun processInput(timeoutUs: Long) {
         val codec = this.codec ?: return
-        
+
+        if (inputQueue.peek() == null) {
+            return
+        }
+
         // Obter buffer de entrada disponível
         val inputIndex = codec.dequeueInputBuffer(timeoutUs)
         if (inputIndex < 0) {
             return // Nenhum buffer disponível
         }
-        
+
         // Obter próximo frame da fila
         val frame = inputQueue.poll() ?: return
         
@@ -287,6 +306,8 @@ class AudioDecoder {
                 timestampUs,
                 0
             )
+        } else {
+            samplesDropped++
         }
     }
     
