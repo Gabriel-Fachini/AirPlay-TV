@@ -21,6 +21,12 @@ class ProtocolHandler(
     private val videoDecoder: VideoDecoder? = null,
     private val audioDecoder: AudioDecoder? = null
 ) {
+    enum class SessionKind {
+        MIRRORING,
+        PHOTO,
+        SLIDESHOW
+    }
+
     private val pairingManager = AirPlayPairingManager()
     private val mirroringSession = AirPlayMirroringSession(
         videoDecoder = videoDecoder,
@@ -39,9 +45,34 @@ class ProtocolHandler(
         data class Connected(val clientIp: String) : ConnectionState()
         data class Error(val message: String) : ConnectionState()
     }
+
+    sealed class MediaPlaybackState {
+        data object Idle : MediaPlaybackState()
+
+        data class PhotoDisplayed(
+            val clientIp: String,
+            val sessionId: String,
+            val assetKey: String,
+            val transition: String?,
+            val imageData: ByteArray
+        ) : MediaPlaybackState()
+
+        data class SlideshowPlaying(
+            val clientIp: String,
+            val sessionId: String,
+            val theme: String?,
+            val slideDurationSeconds: Int,
+            val state: String,
+            val imageData: ByteArray?,
+            val assetKey: String?,
+            val transition: String?
+        ) : MediaPlaybackState()
+    }
     
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Idle)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
+    private val _mediaPlaybackState = MutableStateFlow<MediaPlaybackState>(MediaPlaybackState.Idle)
+    val mediaPlaybackState: StateFlow<MediaPlaybackState> = _mediaPlaybackState.asStateFlow()
     private val _sessionActivity = MutableSharedFlow<String>(
         replay = 0,
         extraBufferCapacity = 32
@@ -78,6 +109,11 @@ class ProtocolHandler(
     )
     
     private var currentSession: SessionInfo? = null
+    private var lastMediaImageData: ByteArray? = null
+    private var lastMediaAssetKey: String? = null
+    private var lastMediaTransition: String? = null
+    private var audioPayloadsReceived = 0L
+    private var audioAccessUnitsQueued = 0L
     
     companion object {
         init {
@@ -139,6 +175,10 @@ class ProtocolHandler(
         
         stopRTSPServerNative()
         currentSession = null
+        _mediaPlaybackState.value = MediaPlaybackState.Idle
+        lastMediaImageData = null
+        lastMediaAssetKey = null
+        lastMediaTransition = null
         _connectionState.value = ConnectionState.Idle
         
         // Logar estatísticas finais
@@ -205,6 +245,12 @@ class ProtocolHandler(
     private fun onClientDisconnected() {
         Logger.i(Logger.TAG_PROTOCOL, "Client disconnected")
         currentSession = null
+        audioPayloadsReceived = 0L
+        audioAccessUnitsQueued = 0L
+        _mediaPlaybackState.value = MediaPlaybackState.Idle
+        lastMediaImageData = null
+        lastMediaAssetKey = null
+        lastMediaTransition = null
         pairingManager.resetSession()
         mirroringSession.reset()
         _connectionState.value = ConnectionState.Idle
@@ -216,6 +262,12 @@ class ProtocolHandler(
     @Suppress("unused")
     private fun onError(error: String) {
         Logger.e(Logger.TAG_PROTOCOL, "Protocol error: $error")
+        audioPayloadsReceived = 0L
+        audioAccessUnitsQueued = 0L
+        _mediaPlaybackState.value = MediaPlaybackState.Idle
+        lastMediaImageData = null
+        lastMediaAssetKey = null
+        lastMediaTransition = null
         pairingManager.resetSession()
         mirroringSession.reset()
         _connectionState.value = ConnectionState.Error(error)
@@ -223,6 +275,21 @@ class ProtocolHandler(
 
     @Suppress("unused")
     private fun onControlRequestHandled(method: String) {
+        if (
+            method == "GET /server-info" ||
+            method == "GET /slideshow-features" ||
+            method == "PUT /photo" ||
+            method == "PUT /slideshows/1" ||
+            method == "POST /stop" ||
+            method == "/play" ||
+            method == "/scrub" ||
+            method == "/rate" ||
+            method == "/playback-info" ||
+            method == "/event" ||
+            method == "/setProperty"
+        ) {
+            Logger.i(Logger.TAG_PROTOCOL, "Native media control handled: $method")
+        }
         _sessionActivity.tryEmit(method)
     }
 
@@ -256,6 +323,93 @@ class ProtocolHandler(
         
         mirroringSession.handleVideoPacket(payloadType, data)
     }
+
+    @Suppress("unused")
+    private fun onPhotoPlaybackSession(
+        clientIp: String,
+        sessionId: String,
+        assetKey: String,
+        transition: String?,
+        imageData: ByteArray,
+        isSlideshow: Boolean
+    ) {
+        Logger.i(
+            Logger.TAG_PROTOCOL,
+            "Media callback photo: client=$clientIp sessionId=${sessionId.ifEmpty { "none" }} " +
+                "bytes=${imageData.size} assetKey=${assetKey.ifEmpty { "none" }} " +
+                "transition=${transition ?: "none"} slideshow=$isSlideshow"
+        )
+        lastMediaImageData = imageData.copyOf()
+        lastMediaAssetKey = assetKey
+        lastMediaTransition = transition
+
+        _sessionActivity.tryEmit(if (isSlideshow) "SLIDESHOW_PHOTO" else "PHOTO")
+        _mediaPlaybackState.value = if (isSlideshow) {
+            MediaPlaybackState.SlideshowPlaying(
+                clientIp = clientIp,
+                sessionId = sessionId,
+                theme = null,
+                slideDurationSeconds = 0,
+                state = "playing",
+                imageData = imageData.copyOf(),
+                assetKey = assetKey,
+                transition = transition
+            )
+        } else {
+            MediaPlaybackState.PhotoDisplayed(
+                clientIp = clientIp,
+                sessionId = sessionId,
+                assetKey = assetKey,
+                transition = transition,
+                imageData = imageData.copyOf()
+            )
+        }
+    }
+
+    @Suppress("unused")
+    private fun onSlideshowPlaybackState(
+        clientIp: String,
+        sessionId: String,
+        theme: String?,
+        slideDurationSeconds: Int,
+        state: String
+    ) {
+        Logger.i(
+            Logger.TAG_PROTOCOL,
+            "Media callback slideshow: client=$clientIp sessionId=${sessionId.ifEmpty { "none" }} " +
+                "state=$state theme=${theme ?: "none"} duration=${slideDurationSeconds}s " +
+                "hasImage=${lastMediaImageData != null}"
+        )
+        _sessionActivity.tryEmit("SLIDESHOW_STATE")
+        _mediaPlaybackState.value = if (state.equals("stopped", ignoreCase = true)) {
+            MediaPlaybackState.Idle
+        } else {
+            MediaPlaybackState.SlideshowPlaying(
+                clientIp = clientIp,
+                sessionId = sessionId,
+                theme = theme,
+                slideDurationSeconds = slideDurationSeconds,
+                state = state,
+                imageData = lastMediaImageData?.copyOf(),
+                assetKey = lastMediaAssetKey,
+                transition = lastMediaTransition
+            )
+        }
+    }
+
+    @Suppress("unused")
+    private fun onMediaPlaybackStopped(sessionId: String) {
+        Logger.i(
+            Logger.TAG_PROTOCOL,
+            "Media callback stop: sessionId=${sessionId.ifEmpty { "none" }} " +
+                "lastAsset=${lastMediaAssetKey ?: "none"} hadImage=${lastMediaImageData != null}"
+        )
+        lastMediaImageData = null
+        lastMediaAssetKey = null
+        lastMediaTransition = null
+        _sessionActivity.tryEmit("MEDIA_STOP")
+        _mediaPlaybackState.value = MediaPlaybackState.Idle
+    }
     
     /**
      * Callback de dados de vídeo (H.264) do código nativo
@@ -280,23 +434,98 @@ class ProtocolHandler(
     }
     
     /**
-     * Callback de dados de áudio (AAC) do código nativo
-     * 
-     * @param data Pacote RTP completo
-     * @param timestamp Timestamp RTP (90kHz)
+     * Callback de dados de áudio AAC do código nativo.
+     * O RTPReceiver nativo já removeu o header RTP; aqui recebemos apenas o payload
+     * MPEG4-generic e precisamos extrair os Access Units AAC antes de enviar ao decoder.
      */
     @Suppress("unused")
     private fun onAudioData(data: ByteArray, timestamp: Long) {
         _sessionActivity.tryEmit("AUDIO")
-        // Parsear pacote RTP
-        val packet = rtpParser.parsePacket(data, data.size)
-        
-        if (packet != null && packet.header.payloadType == RTPParser.PAYLOAD_TYPE_AAC) {
-            // Enfileirar payload AAC para decodificação
-            audioDecoder?.queueFrame(
-                data = packet.payload,
-                timestamp = packet.header.timestamp
+
+        audioPayloadsReceived++
+        val accessUnits = extractAacAccessUnits(data)
+        if (audioPayloadsReceived <= 3L || accessUnits.isEmpty()) {
+            Logger.i(
+                Logger.TAG_PROTOCOL,
+                "Audio payload received: payload#=$audioPayloadsReceived bytes=${data.size} accessUnits=${accessUnits.size}"
             )
         }
+
+        if (accessUnits.isEmpty()) {
+            return
+        }
+
+        accessUnits.forEach { accessUnit ->
+            audioAccessUnitsQueued++
+            if (audioAccessUnitsQueued <= 3L) {
+                Logger.i(
+                    Logger.TAG_PROTOCOL,
+                    "Queueing AAC access unit #$audioAccessUnitsQueued (${accessUnit.size} bytes)"
+                )
+            }
+            audioDecoder?.queueFrame(
+                data = accessUnit,
+                timestamp = timestamp
+            )
+        }
+    }
+
+    private fun extractAacAccessUnits(payload: ByteArray): List<ByteArray> {
+        if (payload.size < 4) {
+            Logger.w(Logger.TAG_PROTOCOL, "AAC payload too small: ${payload.size} bytes")
+            return emptyList()
+        }
+
+        val auHeadersLengthBits = ((payload[0].toInt() and 0xFF) shl 8) or
+            (payload[1].toInt() and 0xFF)
+        if (auHeadersLengthBits <= 0) {
+            Logger.w(Logger.TAG_PROTOCOL, "AAC payload missing AU headers: ${payload.size} bytes")
+            return emptyList()
+        }
+
+        val auHeadersLengthBytes = (auHeadersLengthBits + 7) / 8
+        val headersStart = 2
+        val dataStart = headersStart + auHeadersLengthBytes
+        if (payload.size < dataStart) {
+            Logger.w(
+                Logger.TAG_PROTOCOL,
+                "AAC payload truncated before AU data: payload=${payload.size} headersBytes=$auHeadersLengthBytes"
+            )
+            return emptyList()
+        }
+
+        val accessUnits = mutableListOf<ByteArray>()
+        var headerOffset = headersStart
+        var dataOffset = dataStart
+        val headerCount = auHeadersLengthBits / 16
+
+        repeat(headerCount) {
+            if (headerOffset + 1 >= dataStart) {
+                Logger.w(Logger.TAG_PROTOCOL, "AAC AU header truncated at index=$it")
+                return accessUnits
+            }
+
+            val auHeader = ((payload[headerOffset].toInt() and 0xFF) shl 8) or
+                (payload[headerOffset + 1].toInt() and 0xFF)
+            val accessUnitSize = (auHeader shr 3) and 0x1FFF
+            headerOffset += 2
+
+            if (accessUnitSize <= 0) {
+                Logger.w(Logger.TAG_PROTOCOL, "AAC AU header with invalid size=$accessUnitSize")
+                return@repeat
+            }
+            if (dataOffset + accessUnitSize > payload.size) {
+                Logger.w(
+                    Logger.TAG_PROTOCOL,
+                    "AAC access unit exceeds payload: size=$accessUnitSize remaining=${payload.size - dataOffset}"
+                )
+                return accessUnits
+            }
+
+            accessUnits += payload.copyOfRange(dataOffset, dataOffset + accessUnitSize)
+            dataOffset += accessUnitSize
+        }
+
+        return accessUnits
     }
 }

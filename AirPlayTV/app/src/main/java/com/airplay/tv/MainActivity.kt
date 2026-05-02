@@ -57,8 +57,9 @@ class MainActivity : ComponentActivity() {
         // Interceptar botão BACK durante mirroring para encerrar sessão
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             val currentState = viewModel.uiState.value
-            if (currentState is UIStateManager.UIState.Mirroring) {
-                Logger.i(Logger.TAG_UI, "BACK pressed during mirroring, ending session")
+            if (currentState is UIStateManager.UIState.Mirroring ||
+                currentState is UIStateManager.UIState.MediaPlayback) {
+                Logger.i(Logger.TAG_UI, "BACK pressed during active AirPlay session, ending session")
                 viewModel.endSession()
                 return true // Consumir evento, não fechar app
             }
@@ -109,6 +110,19 @@ fun AirPlayScreen(viewModel: AirPlayViewModel) {
                 onSurfaceReleased = {
                     viewModel.clearVideoSurface()
                 }
+            )
+        }
+
+        is UIStateManager.UIState.MediaPlayback -> {
+            MediaPlaybackScreen(
+                kind = state.kind,
+                clientIp = state.clientIp,
+                sessionId = state.sessionId,
+                imageData = state.imageData,
+                assetKey = state.assetKey,
+                transition = state.transition,
+                theme = state.theme,
+                slideDurationSeconds = state.slideDurationSeconds
             )
         }
         

@@ -4,6 +4,7 @@
 #include <string>
 #include <functional>
 #include <cstdint>
+#include <vector>
 
 /**
  * Handles RTSP protocol requests for AirPlay

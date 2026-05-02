@@ -24,6 +24,13 @@ class AirPlayService : Service() {
         val width: Int = 0,
         val height: Int = 0
     )
+
+    private data class AppliedCodecConfig(
+        val width: Int,
+        val height: Int,
+        val sps: ByteArray,
+        val pps: ByteArray
+    )
     
     private val binder = LocalBinder()
     private val sessionManager = SessionManager()
@@ -46,6 +53,7 @@ class AirPlayService : Service() {
     private var videoSurface: Surface? = null
     private var pendingSessionInfo: ProtocolHandler.SessionInfo? = null
     private var pendingCodecConfig: ProtocolHandler.CodecConfig? = null
+    private var appliedCodecConfig: AppliedCodecConfig? = null
     private var mediaPipelineStarted = false
     
     inner class LocalBinder : Binder() {
@@ -76,6 +84,32 @@ class AirPlayService : Service() {
             protocolHandler.codecConfigReceived.collect { config ->
                 Logger.i(Logger.TAG_SERVICE, "Codec config received: ${config.width}x${config.height}")
                 handleCodecConfigReceived(config)
+            }
+        }
+
+        scope.launch {
+            protocolHandler.mediaPlaybackState.collect { state ->
+                if (state is ProtocolHandler.MediaPlaybackState.Idle) {
+                    Logger.i(Logger.TAG_SERVICE, "Media playback state: Idle")
+                    if (!sessionManager.isSessionActive()) {
+                        telemetryCollector.reset()
+                    }
+                } else {
+                    val description = when (state) {
+                        is ProtocolHandler.MediaPlaybackState.PhotoDisplayed ->
+                            "photo sessionId=${state.sessionId.ifEmpty { "none" }} asset=${state.assetKey.ifEmpty { "none" }}"
+                        is ProtocolHandler.MediaPlaybackState.SlideshowPlaying ->
+                            "slideshow sessionId=${state.sessionId.ifEmpty { "none" }} theme=${state.theme ?: "none"} duration=${state.slideDurationSeconds}s"
+                        is ProtocolHandler.MediaPlaybackState.Idle -> "idle"
+                    }
+                    Logger.i(Logger.TAG_SERVICE, "Media playback state active: $description")
+                    if (sessionManager.isSessionActive()) {
+                        Logger.i(Logger.TAG_SERVICE, "Ending active mirroring session because HTTP media playback took over")
+                        sessionManager.endSession()
+                    }
+                    Logger.i(Logger.TAG_SERVICE, "Stopping media pipeline for HTTP media playback mode")
+                    stopMediaPipeline()
+                }
             }
         }
         
@@ -249,21 +283,53 @@ class AirPlayService : Service() {
      * Reconfigures video decoder with SPS/PPS
      */
     private fun handleCodecConfigReceived(config: ProtocolHandler.CodecConfig) {
+        val incomingConfig = AppliedCodecConfig(
+            width = config.width,
+            height = config.height,
+            sps = config.sps.toByteArray(),
+            pps = config.pps.toByteArray()
+        )
         pendingCodecConfig = config.copy(
             sps = config.sps.duplicate(),
             pps = config.pps.duplicate()
         )
-        Logger.i(Logger.TAG_SERVICE, "Handling codec config: ${config.width}x${config.height}, SPS=${config.sps.remaining()}B, PPS=${config.pps.remaining()}B")
+        Logger.i(Logger.TAG_SERVICE, "Handling codec config: ${config.width}x${config.height}, SPS=${incomingConfig.sps.size}B, PPS=${incomingConfig.pps.size}B")
         
         val surface = videoSurface
         if (surface == null) {
             Logger.w(Logger.TAG_SERVICE, "Cannot configure decoder: no surface available")
             return
         }
+
+        val currentConfig = appliedCodecConfig
+        val decoderState = videoDecoder.state.value
+        if (currentConfig != null && decoderState == VideoDecoder.DecoderState.Running) {
+            val sameResolution = currentConfig.width == incomingConfig.width &&
+                currentConfig.height == incomingConfig.height
+            val sameSps = currentConfig.sps.contentEquals(incomingConfig.sps)
+            val samePps = currentConfig.pps.contentEquals(incomingConfig.pps)
+
+            if (sameResolution) {
+                Logger.i(
+                    Logger.TAG_SERVICE,
+                    "Ignoring in-session codec config update without restart: " +
+                        "sameResolution=true spsChanged=${!sameSps} ppsChanged=${!samePps}"
+                )
+                pendingCodecConfig = null
+                return
+            }
+
+            Logger.i(
+                Logger.TAG_SERVICE,
+                "Reconfiguring video decoder due to resolution change: " +
+                    "${currentConfig.width}x${currentConfig.height} -> ${incomingConfig.width}x${incomingConfig.height} " +
+                    "(spsChanged=${!sameSps}, ppsChanged=${!samePps})"
+            )
+        }
         
         try {
             // Stop decoder if running
-            if (videoDecoder.state.value != VideoDecoder.DecoderState.Idle) {
+            if (decoderState != VideoDecoder.DecoderState.Idle) {
                 Logger.i(Logger.TAG_SERVICE, "Stopping existing decoder before reconfiguration")
                 videoDecoder.stop()
             }
@@ -280,6 +346,7 @@ class AirPlayService : Service() {
             if (success) {
                 // Start decoder
                 videoDecoder.start()
+                appliedCodecConfig = incomingConfig
                 pendingCodecConfig = null
                 Logger.i(Logger.TAG_SERVICE, "Video decoder configured and started with codec config")
             } else {
@@ -384,6 +451,7 @@ class AirPlayService : Service() {
         mediaPipelineStarted = false
         pendingSessionInfo = null
         pendingCodecConfig = null
+        appliedCodecConfig = null
         
         // Parar sync manager
         try {
@@ -463,6 +531,10 @@ class AirPlayService : Service() {
     fun getConnectionState(): StateFlow<ProtocolHandler.ConnectionState> {
         return protocolHandler.connectionState
     }
+
+    fun getMediaPlaybackState(): StateFlow<ProtocolHandler.MediaPlaybackState> {
+        return protocolHandler.mediaPlaybackState
+    }
     
     /**
      * Obtém telemetria
@@ -481,4 +553,11 @@ class AirPlayService : Service() {
     fun isServerRunning(): Boolean {
         return protocolHandler.isServerRunning()
     }
+}
+
+private fun ByteBuffer.toByteArray(): ByteArray {
+    val duplicate = duplicate()
+    val bytes = ByteArray(duplicate.remaining())
+    duplicate.get(bytes)
+    return bytes
 }

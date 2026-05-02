@@ -21,6 +21,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <cstring>
+#include <sstream>
 #include <memory>
 
 #define TAG "AirPlay:Server"
@@ -34,6 +35,108 @@ std::vector<uint8_t> invokeByteArrayCallback(
     const uint8_t* data,
     size_t size,
     bool* ok);
+
+namespace {
+
+std::string trimCopy(const std::string& value) {
+    const auto start = value.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) {
+        return "";
+    }
+    const auto end = value.find_last_not_of(" \t\r\n");
+    return value.substr(start, end - start + 1);
+}
+
+std::string getRequestLine(const std::string& request) {
+    const size_t lineEnd = request.find("\r\n");
+    return request.substr(0, lineEnd);
+}
+
+std::string getRequestPath(const std::string& requestLine) {
+    const size_t firstSpace = requestLine.find(' ');
+    if (firstSpace == std::string::npos) {
+        return "";
+    }
+    const size_t secondSpace = requestLine.find(' ', firstSpace + 1);
+    if (secondSpace == std::string::npos) {
+        return "";
+    }
+    return requestLine.substr(firstSpace + 1, secondSpace - firstSpace - 1);
+}
+
+std::string getPathWithoutQuery(const std::string& path) {
+    const size_t queryStart = path.find('?');
+    return queryStart == std::string::npos ? path : path.substr(0, queryStart);
+}
+
+std::string xmlEscape(const std::string& value) {
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (char ch : value) {
+        switch (ch) {
+            case '&': escaped += "&amp;"; break;
+            case '<': escaped += "&lt;"; break;
+            case '>': escaped += "&gt;"; break;
+            case '"': escaped += "&quot;"; break;
+            case '\'': escaped += "&apos;"; break;
+            default: escaped.push_back(ch); break;
+        }
+    }
+    return escaped;
+}
+
+void sendHttpResponse(
+    int socket,
+    int statusCode,
+    const std::string& reason,
+    const std::string& contentType,
+    const std::string& body,
+    const std::vector<std::string>& extraHeaders = {}) {
+    std::ostringstream response;
+    response << "HTTP/1.1 " << statusCode << ' ' << reason << "\r\n";
+    if (!contentType.empty()) {
+        response << "Content-Type: " << contentType << "\r\n";
+    }
+    for (const auto& header : extraHeaders) {
+        response << header << "\r\n";
+    }
+    response << "Content-Length: " << body.size() << "\r\n";
+    response << "\r\n";
+    response << body;
+
+    const std::string payload = response.str();
+    send(socket, payload.c_str(), payload.length(), 0);
+}
+
+std::string parseXmlTagValue(const std::string& xml, const std::string& key) {
+    const std::string keyToken = "<key>" + key + "</key>";
+    const size_t keyPos = xml.find(keyToken);
+    if (keyPos == std::string::npos) {
+        return "";
+    }
+
+    const size_t stringStart = xml.find("<string>", keyPos);
+    if (stringStart != std::string::npos) {
+        const size_t valueStart = stringStart + 8;
+        const size_t valueEnd = xml.find("</string>", valueStart);
+        if (valueEnd != std::string::npos) {
+            return xml.substr(valueStart, valueEnd - valueStart);
+        }
+    }
+
+    const size_t integerStart = xml.find("<integer>", keyPos);
+    if (integerStart != std::string::npos) {
+        const size_t valueStart = integerStart + 9;
+        const size_t valueEnd = xml.find("</integer>", valueStart);
+        if (valueEnd != std::string::npos) {
+            return xml.substr(valueStart, valueEnd - valueStart);
+        }
+    }
+
+    return "";
+}
+
+}  // namespace
 
 AirPlayServer::AirPlayServer()
     : running_(false)
@@ -51,6 +154,9 @@ AirPlayServer::AirPlayServer()
     , audioSampleRate_(44100)
     , audioChannels_(2)
     , sessionAnnounced_(false)
+    , mediaSessionAnnounced_(false)
+    , slideshowActive_(false)
+    , slideshowDurationSeconds_(0)
     , rtspHandler_(std::make_unique<RTSPHandler>())
     , fairplayHandler_(std::make_unique<FairPlayHandler>())
 {
@@ -157,11 +263,15 @@ void AirPlayServer::serverThread() {
 
         clientIp_ = inet_ntoa(clientAddr.sin_addr);
         sessionAnnounced_ = false;
+        mediaSessionAnnounced_ = false;
+        resetMediaPlaybackState();
         LOGI("Client connected from %s", clientIp_.c_str());
 
         handleClient(clientSocket);
 
         close(clientSocket);
+        stopMirrorVideoServer();
+        stopRTPReceiver();
         
         if (onDisconnection_) {
             onDisconnection_();
@@ -250,7 +360,12 @@ void AirPlayServer::handleClient(int clientSocket) {
             requestBuffer = requestBuffer.substr(bodyStart + contentLength);
 
             if (!handleRTSPRequest(clientSocket, request)) {
-                LOGW("Failed to handle RTSP request");
+                const std::string requestLine = getRequestLine(request);
+                if (requestLine.rfind("TEARDOWN", 0) == 0) {
+                    LOGI("Client requested normal session teardown");
+                } else {
+                    LOGW("Failed to handle RTSP request: %s", requestLine.c_str());
+                }
                 return;
             }
             
@@ -268,15 +383,34 @@ bool AirPlayServer::handleRTSPRequest(int socket, const std::string& request) {
         return false;
     }
 
+    const std::string requestLine = getRequestLine(request);
+    const std::string requestPath = getRequestPath(requestLine);
     std::string cseq = rtspHandler_->extractHeader(request, "CSeq");
     std::string userAgent = rtspHandler_->extractHeader(request, "User-Agent");
+    const std::string sessionId = extractHeader(request, "X-Apple-Session-ID");
     
-    // Log request details for debugging iPhone connection issues
-    LOGI("RTSP Request: %s (CSeq: %s, User-Agent: %s)", 
-         request.substr(0, request.find('\r')).c_str(), 
+    LOGI("Control request: %s path=%s cseq=%s sessionId=%s ua=%s",
+         requestLine.c_str(),
+         requestPath.c_str(),
          cseq.c_str(), 
+         sessionId.empty() ? "none" : sessionId.c_str(),
          userAgent.empty() ? "unknown" : userAgent.c_str());
     
+    if (request.rfind("GET /server-info", 0) == 0 ||
+        request.rfind("GET /slideshow-features", 0) == 0 ||
+        request.rfind("GET /scrub", 0) == 0 ||
+        request.rfind("GET /playback-info", 0) == 0 ||
+        request.rfind("PUT /photo", 0) == 0 ||
+        request.rfind("PUT /setProperty", 0) == 0 ||
+        request.rfind("PUT /slideshows/1", 0) == 0 ||
+        request.rfind("POST /play", 0) == 0 ||
+        request.rfind("POST /scrub", 0) == 0 ||
+        request.rfind("POST /rate", 0) == 0 ||
+        request.rfind("POST /event", 0) == 0 ||
+        request.rfind("POST /stop", 0) == 0) {
+        return handleMediaRequest(socket, request);
+    }
+
     if (request.rfind("GET /info", 0) == 0) {
         handleInfo(socket, cseq);
         notifyActivity("GET /info");
@@ -318,10 +452,212 @@ bool AirPlayServer::handleRTSPRequest(int socket, const std::string& request) {
         notifyActivity("TEARDOWN");
         return false; // Close connection
     } else {
-        LOGW("Unknown RTSP method: %s", request.substr(0, 100).c_str());
+        LOGW("Unknown control request, closing client connection: %s", requestLine.c_str());
         return false;
     }
 
+    return true;
+}
+
+bool AirPlayServer::handleMediaRequest(int socket, const std::string& request) {
+    const std::string requestLine = getRequestLine(request);
+    const std::string requestPath = getRequestPath(requestLine);
+    const std::string routePath = getPathWithoutQuery(requestPath);
+    const std::string method = requestLine.substr(0, requestLine.find(' '));
+    const std::string sessionId = extractHeader(request, "X-Apple-Session-ID");
+    const std::string body = extractBody(request);
+
+    LOGI(
+        "Media request: %s path=%s sessionId=%s bodyBytes=%zu",
+        requestLine.c_str(),
+        routePath.c_str(),
+        sessionId.empty() ? "none" : sessionId.c_str(),
+        body.size());
+
+    mediaSessionId_ = sessionId;
+    mediaSessionAnnounced_ = true;
+
+    if (routePath == "/server-info") {
+        static const char* kServerInfoBody =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+            "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">"
+            "<plist version=\"1.0\"><dict>"
+            "<key>deviceid</key><string>50:0F:A5:7F:57:FA</string>"
+            "<key>features</key><integer>129964703714</integer>"
+            "<key>model</key><string>AppleTV3,2</string>"
+            "<key>protovers</key><string>1.0</string>"
+            "<key>srcvers</key><string>220.68</string>"
+            "</dict></plist>";
+        sendHttpResponse(socket, 200, "OK", "text/x-apple-plist+xml", kServerInfoBody);
+        notifyActivity("GET /server-info");
+        return true;
+    }
+
+    if (routePath == "/slideshow-features") {
+        static const char* kSlideshowFeaturesBody =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+            "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">"
+            "<plist version=\"1.0\"><dict><key>themes</key><array>"
+            "<dict><key>key</key><string>None</string><key>name</key><string>None</string></dict>"
+            "<dict><key>key</key><string>Dissolve</string><key>name</key><string>Dissolve</string></dict>"
+            "<dict><key>key</key><string>Classic</string><key>name</key><string>Classic</string></dict>"
+            "</array></dict></plist>";
+        sendHttpResponse(socket, 200, "OK", "text/x-apple-plist+xml", kSlideshowFeaturesBody);
+        notifyActivity("GET /slideshow-features");
+        return true;
+    }
+
+    if (routePath == "/photo") {
+        const std::string assetKey = extractHeader(request, "X-Apple-AssetKey");
+        const std::string assetAction = extractHeader(request, "X-Apple-AssetAction");
+        const std::string transition = extractHeader(request, "X-Apple-Transition");
+        std::vector<uint8_t> photoData;
+
+        LOGI(
+            "Photo request details: sessionId=%s action=%s assetKey=%s transition=%s slideshowActive=%s",
+            mediaSessionId_.empty() ? "none" : mediaSessionId_.c_str(),
+            assetAction.empty() ? "display" : assetAction.c_str(),
+            assetKey.empty() ? "none" : assetKey.c_str(),
+            transition.empty() ? "none" : transition.c_str(),
+            slideshowActive_ ? "true" : "false");
+
+        if (assetAction == "displayCached") {
+            const auto cached = photoCache_.find(assetKey);
+            if (cached == photoCache_.end()) {
+                sendHttpResponse(socket, 412, "Precondition Failed", "", "");
+                LOGW("Requested cached photo missing: sessionId=%s assetKey=%s",
+                     mediaSessionId_.empty() ? "none" : mediaSessionId_.c_str(),
+                     assetKey.c_str());
+                notifyActivity("PUT /photo");
+                return true;
+            }
+            photoData = cached->second;
+        } else {
+            photoData.assign(body.begin(), body.end());
+            if (assetAction == "cacheOnly" && !assetKey.empty()) {
+                photoCache_[assetKey] = photoData;
+                LOGI("Photo cached only: sessionId=%s assetKey=%s bytes=%zu cacheSize=%zu",
+                     mediaSessionId_.empty() ? "none" : mediaSessionId_.c_str(),
+                     assetKey.c_str(),
+                     photoData.size(),
+                     photoCache_.size());
+            }
+        }
+
+        if (photoData.empty()) {
+            sendHttpResponse(socket, 400, "Bad Request", "", "");
+            LOGW("Photo request without usable JPEG data: sessionId=%s action=%s assetKey=%s",
+                 mediaSessionId_.empty() ? "none" : mediaSessionId_.c_str(),
+                 assetAction.empty() ? "display" : assetAction.c_str(),
+                 assetKey.empty() ? "none" : assetKey.c_str());
+            notifyActivity("PUT /photo");
+            return true;
+        }
+
+        if (!assetKey.empty() && assetAction != "displayCached") {
+            photoCache_[assetKey] = photoData;
+        }
+        lastDisplayedPhoto_ = photoData;
+        lastAssetKey_ = assetKey;
+        lastTransition_ = transition;
+
+        LOGI("Photo ready for playback: sessionId=%s bytes=%zu assetKey=%s cached=%zu slideshowActive=%s",
+             mediaSessionId_.empty() ? "none" : mediaSessionId_.c_str(),
+             photoData.size(),
+             assetKey.empty() ? "none" : assetKey.c_str(),
+             photoCache_.size(),
+             slideshowActive_ ? "true" : "false");
+
+        if (onPhotoPlayback_) {
+            onPhotoPlayback_(
+                clientIp_,
+                mediaSessionId_,
+                assetKey,
+                transition,
+                photoData,
+                slideshowActive_);
+        }
+
+        sendHttpResponse(socket, 200, "OK", "", "");
+        notifyActivity("PUT /photo");
+        return true;
+    }
+
+    if (routePath == "/slideshows/1") {
+        const std::string state = parseXmlTagValue(body, "state");
+        const std::string theme = parseXmlTagValue(body, "theme");
+        const std::string slideDuration = parseXmlTagValue(body, "slideDuration");
+
+        slideshowTheme_ = theme;
+        slideshowDurationSeconds_ = slideDuration.empty() ? 0 : std::stoi(slideDuration);
+        slideshowActive_ = state == "playing";
+
+        LOGI("Slideshow request parsed: sessionId=%s state=%s theme=%s duration=%d cachedPhotos=%zu lastAsset=%s",
+             mediaSessionId_.empty() ? "none" : mediaSessionId_.c_str(),
+             state.empty() ? "playing" : state.c_str(),
+             slideshowTheme_.empty() ? "none" : slideshowTheme_.c_str(),
+             slideshowDurationSeconds_,
+             photoCache_.size(),
+             lastAssetKey_.empty() ? "none" : lastAssetKey_.c_str());
+
+        if (onSlideshowPlayback_) {
+            onSlideshowPlayback_(
+                clientIp_,
+                mediaSessionId_,
+                slideshowTheme_,
+                slideshowDurationSeconds_,
+                state.empty() ? "playing" : state);
+        }
+
+        sendHttpResponse(
+            socket,
+            200,
+            "OK",
+            "text/x-apple-plist+xml",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+            "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">"
+            "<plist version=\"1.0\"><dict/></plist>");
+        notifyActivity("PUT /slideshows/1");
+        return true;
+    }
+
+    if (routePath == "/stop") {
+        LOGI("Stopping media playback: sessionId=%s slideshowActive=%s lastAsset=%s",
+             mediaSessionId_.empty() ? "none" : mediaSessionId_.c_str(),
+             slideshowActive_ ? "true" : "false",
+             lastAssetKey_.empty() ? "none" : lastAssetKey_.c_str());
+        if (onMediaStop_) {
+            onMediaStop_(mediaSessionId_);
+        }
+        resetMediaPlaybackState();
+        sendHttpResponse(socket, 200, "OK", "", "");
+        notifyActivity("POST /stop");
+        return true;
+    }
+
+    if (routePath == "/play" ||
+        routePath == "/scrub" ||
+        routePath == "/rate" ||
+        routePath == "/playback-info" ||
+        routePath == "/event" ||
+        routePath == "/setProperty") {
+        sendHttpResponse(socket, 501, "Not Implemented", "", "");
+        LOGW("Video HTTP playback request gracefully rejected: method=%s path=%s sessionId=%s",
+             method.c_str(),
+             routePath.c_str(),
+             mediaSessionId_.empty() ? "none" : mediaSessionId_.c_str());
+        notifyActivity(routePath);
+        return true;
+    }
+
+    LOGW("Unsupported media request path: method=%s path=%s sessionId=%s",
+         method.c_str(),
+         routePath.c_str(),
+         mediaSessionId_.empty() ? "none" : mediaSessionId_.c_str());
+    sendHttpResponse(socket, 404, "Not Found", "", "");
     return true;
 }
 
@@ -419,10 +755,21 @@ void AirPlayServer::parseSetupParams(const std::string& request) {
 }
 
 void AirPlayServer::notifyActivity(const std::string& method) {
-    if (!sessionAnnounced_ || !onActivity_) {
+    if ((!sessionAnnounced_ && !mediaSessionAnnounced_) || !onActivity_) {
         return;
     }
     onActivity_(method);
+}
+
+void AirPlayServer::resetMediaPlaybackState() {
+    mediaSessionId_.clear();
+    slideshowActive_ = false;
+    slideshowTheme_.clear();
+    slideshowDurationSeconds_ = 0;
+    lastAssetKey_.clear();
+    lastTransition_.clear();
+    lastDisplayedPhoto_.clear();
+    photoCache_.clear();
 }
 
 // ============================================================================

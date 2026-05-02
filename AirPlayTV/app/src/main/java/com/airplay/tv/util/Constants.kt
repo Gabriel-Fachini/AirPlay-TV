@@ -11,7 +11,7 @@ object Constants {
     
     // Protocol
     const val AIRPLAY_MODEL = "AppleTV3,2"
-    const val AIRPLAY_FEATURES = "0x427FFFF7,0x1E"  // Sem Authentication_8 (bit 27 desligado)
+    const val AIRPLAY_FEATURES = "0x427FFFE2,0x1E"  // Sem Video/VideoFairPlay/VideoVolumeControl/HLS ate o suporte HTTP de video existir
     const val AIRPLAY_SRC_VERSION = "220.68"
     const val AIRPLAY_VERSION = "2"
     

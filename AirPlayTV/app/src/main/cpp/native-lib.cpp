@@ -136,6 +136,109 @@ void onMirroringVideoPacketCallback(int payloadType, const uint8_t* data, size_t
     env->DeleteLocalRef(cls);
 }
 
+void onPhotoPlaybackCallback(
+        const std::string& clientIp,
+        const std::string& sessionId,
+        const std::string& assetKey,
+        const std::string& transition,
+        const std::vector<uint8_t>& imageData,
+        bool isSlideshow) {
+    JNIEnv* env = getJNIEnv();
+    if (!env || !g_callbackObject) return;
+
+    jclass cls = env->GetObjectClass(g_callbackObject);
+    jmethodID method = env->GetMethodID(
+        cls,
+        "onPhotoPlaybackSession",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[BZ)V");
+
+    if (method) {
+        jstring jClientIp = env->NewStringUTF(clientIp.c_str());
+        jstring jSessionId = env->NewStringUTF(sessionId.c_str());
+        jstring jAssetKey = env->NewStringUTF(assetKey.c_str());
+        jstring jTransition = transition.empty() ? nullptr : env->NewStringUTF(transition.c_str());
+        jbyteArray jData = env->NewByteArray(static_cast<jsize>(imageData.size()));
+        env->SetByteArrayRegion(
+            jData,
+            0,
+            static_cast<jsize>(imageData.size()),
+            reinterpret_cast<const jbyte*>(imageData.data()));
+        env->CallVoidMethod(
+            g_callbackObject,
+            method,
+            jClientIp,
+            jSessionId,
+            jAssetKey,
+            jTransition,
+            jData,
+            static_cast<jboolean>(isSlideshow));
+        env->DeleteLocalRef(jClientIp);
+        env->DeleteLocalRef(jSessionId);
+        env->DeleteLocalRef(jAssetKey);
+        if (jTransition != nullptr) {
+            env->DeleteLocalRef(jTransition);
+        }
+        env->DeleteLocalRef(jData);
+    }
+
+    env->DeleteLocalRef(cls);
+}
+
+void onSlideshowPlaybackCallback(
+        const std::string& clientIp,
+        const std::string& sessionId,
+        const std::string& theme,
+        int slideDurationSeconds,
+        const std::string& state) {
+    JNIEnv* env = getJNIEnv();
+    if (!env || !g_callbackObject) return;
+
+    jclass cls = env->GetObjectClass(g_callbackObject);
+    jmethodID method = env->GetMethodID(
+        cls,
+        "onSlideshowPlaybackState",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILjava/lang/String;)V");
+
+    if (method) {
+        jstring jClientIp = env->NewStringUTF(clientIp.c_str());
+        jstring jSessionId = env->NewStringUTF(sessionId.c_str());
+        jstring jTheme = theme.empty() ? nullptr : env->NewStringUTF(theme.c_str());
+        jstring jState = env->NewStringUTF(state.c_str());
+        env->CallVoidMethod(
+            g_callbackObject,
+            method,
+            jClientIp,
+            jSessionId,
+            jTheme,
+            static_cast<jint>(slideDurationSeconds),
+            jState);
+        env->DeleteLocalRef(jClientIp);
+        env->DeleteLocalRef(jSessionId);
+        if (jTheme != nullptr) {
+            env->DeleteLocalRef(jTheme);
+        }
+        env->DeleteLocalRef(jState);
+    }
+
+    env->DeleteLocalRef(cls);
+}
+
+void onMediaStopCallback(const std::string& sessionId) {
+    JNIEnv* env = getJNIEnv();
+    if (!env || !g_callbackObject) return;
+
+    jclass cls = env->GetObjectClass(g_callbackObject);
+    jmethodID method = env->GetMethodID(cls, "onMediaPlaybackStopped", "(Ljava/lang/String;)V");
+
+    if (method) {
+        jstring jSessionId = env->NewStringUTF(sessionId.c_str());
+        env->CallVoidMethod(g_callbackObject, method, jSessionId);
+        env->DeleteLocalRef(jSessionId);
+    }
+
+    env->DeleteLocalRef(cls);
+}
+
 std::vector<uint8_t> invokeByteArrayCallback(
         const char* methodName,
         const uint8_t* data,
@@ -240,6 +343,9 @@ Java_com_airplay_tv_protocol_ProtocolHandler_startRTSPServerNative(
     g_server->setAudioDataCallback(onAudioDataCallback);
     g_server->setErrorCallback(onErrorCallback);
     g_server->setMirroringVideoPacketCallback(onMirroringVideoPacketCallback);
+    g_server->setPhotoPlaybackCallback(onPhotoPlaybackCallback);
+    g_server->setSlideshowPlaybackCallback(onSlideshowPlaybackCallback);
+    g_server->setMediaStopCallback(onMediaStopCallback);
     
     // Salvar referência ao objeto Java para callbacks
     g_callbackObject = env->NewGlobalRef(thiz);

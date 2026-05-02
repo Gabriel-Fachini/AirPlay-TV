@@ -11,6 +11,10 @@
     <string name="state_connecting_subtitle">Aguarde enquanto estabelecemos a conexão</string>
     
     <string name="state_mirroring_hint">Pressione VOLTAR para encerrar</string>
+    <string name="state_media_photo_title">Foto recebida</string>
+    <string name="state_media_slideshow_title">Slideshow ativo</string>
+    <string name="state_media_waiting_photo">Aguardando proxima foto…</string>
+    <string name="state_media_hint">A galeria do iPhone esta conectada</string>
     
     <string name="state_error_title">Erro</string>
     <string name="state_error_button">OK</string>

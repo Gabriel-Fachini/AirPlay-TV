@@ -336,32 +336,11 @@ void RTPReceiver::processRTPPacket(const uint8_t* data, size_t size) {
         }
     }
 
-    // Identify media type by payload type
-    // Common AirPlay payload types:
-    // 96 = H.264 video
-    // 97 = AAC audio
-    // But they can vary, so use size heuristic too
-    
-    bool isVideo = false;
-    bool isAudio = false;
-    
-    if (payloadType == 96) {
-        isVideo = true;
-    } else if (payloadType == 97) {
-        isAudio = true;
-    } else {
-        // Heuristic: large packets are usually video
-        if (payloadSize > 200) {
-            isVideo = true;
-        } else {
-            isAudio = true;
-        }
-    }
-
-    // Call appropriate callback
-    if (isVideo && onVideoData_) {
-        onVideoData_(payload, payloadSize, timestamp);
-    } else if (isAudio && onAudioData_) {
+    // In this MVP mirroring flow, H.264 video arrives over the dedicated mirror TCP
+    // channel. UDP RTP packets handled here are for the auxiliary audio stream.
+    // Routing them as video based on payload type/size heuristics breaks iPhone
+    // gallery video playback because AAC can be misclassified.
+    if (onAudioData_) {
         onAudioData_(payload, payloadSize, timestamp);
     }
 }

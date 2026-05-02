@@ -21,12 +21,10 @@ MirrorServer::MirrorServer()
     , port_(0)
     , running_(false)
 {
-    LOGI("MirrorServer created");
 }
 
 MirrorServer::~MirrorServer() {
     stop();
-    LOGI("MirrorServer destroyed");
 }
 
 int MirrorServer::start() {
@@ -112,7 +110,6 @@ void MirrorServer::serverThread() {
         if (streamSocket < 0) {
             sockaddr_in clientAddr {};
             socklen_t clientLen = sizeof(clientAddr);
-            LOGI("Waiting for mirror TCP client");
             streamSocket = accept(socket_, reinterpret_cast<sockaddr*>(&clientAddr), &clientLen);
             if (streamSocket < 0) {
                 if (running_) {
@@ -154,9 +151,6 @@ void MirrorServer::serverThread() {
 
         if (payloadType == 2) {
             heartbeatCount++;
-            if (heartbeatCount <= 3) {
-                LOGI("Mirror heartbeat #%" PRIu64 " received (option=0x%04x)", heartbeatCount, payloadOption);
-            }
             continue;
         }
 
@@ -198,12 +192,12 @@ void MirrorServer::serverThread() {
         if (onPacket_) {
             if (payloadType == 0) {
                 videoPacketCount++;
-                if (videoPacketCount <= 3 || videoPacketCount % 120 == 0) {
+                if (videoPacketCount <= 2) {
                     LOGI("Forwarding mirror video packet #%" PRIu64 " (%u bytes)", videoPacketCount, payloadSize);
                 }
             } else if (payloadType == 5) {
                 reportPacketCount++;
-                if (reportPacketCount <= 2) {
+                if (reportPacketCount <= 1) {
                     LOGI("Forwarding mirror report packet #%" PRIu64 " (%u bytes)", reportPacketCount, payloadSize);
                 }
             }

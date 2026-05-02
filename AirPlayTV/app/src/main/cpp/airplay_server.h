@@ -7,6 +7,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 class RTSPHandler;
@@ -28,6 +29,20 @@ public:
     using VideoDataCallback = std::function<void(const uint8_t* data, size_t size, uint32_t timestamp)>;
     using AudioDataCallback = std::function<void(const uint8_t* data, size_t size, uint32_t timestamp)>;
     using ErrorCallback = std::function<void(const std::string& error)>;
+    using PhotoPlaybackCallback = std::function<void(
+        const std::string& clientIp,
+        const std::string& sessionId,
+        const std::string& assetKey,
+        const std::string& transition,
+        const std::vector<uint8_t>& imageData,
+        bool isSlideshow)>;
+    using SlideshowPlaybackCallback = std::function<void(
+        const std::string& clientIp,
+        const std::string& sessionId,
+        const std::string& theme,
+        int slideDurationSeconds,
+        const std::string& state)>;
+    using MediaStopCallback = std::function<void(const std::string& sessionId)>;
 
     AirPlayServer();
     ~AirPlayServer();
@@ -44,6 +59,9 @@ public:
     void setVideoDataCallback(VideoDataCallback callback) { onVideoData_ = callback; }
     void setAudioDataCallback(AudioDataCallback callback) { onAudioData_ = callback; }
     void setErrorCallback(ErrorCallback callback) { onError_ = callback; }
+    void setPhotoPlaybackCallback(PhotoPlaybackCallback callback) { onPhotoPlayback_ = callback; }
+    void setSlideshowPlaybackCallback(SlideshowPlaybackCallback callback) { onSlideshowPlayback_ = callback; }
+    void setMediaStopCallback(MediaStopCallback callback) { onMediaStop_ = callback; }
 
     // Informações da sessão
     std::string getClientIp() const { return clientIp_; }
@@ -56,6 +74,7 @@ private:
     void serverThread();
     void handleClient(int clientSocket);
     bool handleRTSPRequest(int socket, const std::string& request);
+    bool handleMediaRequest(int socket, const std::string& request);
     
     // Handlers RTSP
     void handleInfo(int socket, const std::string& cseq);
@@ -88,6 +107,7 @@ private:
     std::string extractBody(const std::string& request);
     void parseSetupParams(const std::string& request);
     void notifyActivity(const std::string& method);
+    void resetMediaPlaybackState();
     
     // Thread e estado
     std::thread serverThread_;
@@ -118,6 +138,15 @@ private:
     int audioChannels_;
     bool sessionAnnounced_;
     std::vector<uint8_t> fairPlayKeyMessage_;
+    bool mediaSessionAnnounced_;
+    std::string mediaSessionId_;
+    bool slideshowActive_;
+    std::string slideshowTheme_;
+    int slideshowDurationSeconds_;
+    std::string lastAssetKey_;
+    std::string lastTransition_;
+    std::vector<uint8_t> lastDisplayedPhoto_;
+    std::unordered_map<std::string, std::vector<uint8_t>> photoCache_;
     
     // Callbacks
     ConnectionCallback onConnection_;
@@ -126,6 +155,9 @@ private:
     VideoDataCallback onVideoData_;
     AudioDataCallback onAudioData_;
     ErrorCallback onError_;
+    PhotoPlaybackCallback onPhotoPlayback_;
+    SlideshowPlaybackCallback onSlideshowPlayback_;
+    MediaStopCallback onMediaStop_;
     std::function<void(int, const uint8_t*, size_t)> onMirroringVideoPacket_;
 
 public:

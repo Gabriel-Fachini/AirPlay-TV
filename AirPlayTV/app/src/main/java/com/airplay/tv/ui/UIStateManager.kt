@@ -37,6 +37,20 @@ class UIStateManager {
             val resolution: String,
             val sessionStartTime: Long
         ) : UIState()
+
+        /**
+         * Sessão ativa de mídia HTTP (foto/slideshow)
+         */
+        data class MediaPlayback(
+            val clientIp: String,
+            val kind: String,
+            val sessionId: String,
+            val imageData: ByteArray?,
+            val assetKey: String?,
+            val transition: String?,
+            val theme: String?,
+            val slideDurationSeconds: Int
+        ) : UIState()
         
         /**
          * Erro ocorreu
@@ -58,14 +72,20 @@ class UIStateManager {
         UIState.Idle::class to setOf(
             UIState.Connecting::class,
             UIState.Mirroring::class,
+            UIState.MediaPlayback::class,
             UIState.Error::class
         ),
         UIState.Connecting::class to setOf(
             UIState.Mirroring::class,
+            UIState.MediaPlayback::class,
             UIState.Error::class,
             UIState.Idle::class
         ),
         UIState.Mirroring::class to setOf(
+            UIState.Idle::class,
+            UIState.Error::class
+        ),
+        UIState.MediaPlayback::class to setOf(
             UIState.Idle::class,
             UIState.Error::class
         ),

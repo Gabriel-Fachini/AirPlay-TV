@@ -231,6 +231,87 @@ Projeto iniciado para criar receptor AirPlay minimalista para Android TV Sony (K
 - recalcular o aspect ratio da `SurfaceView` com base no tamanho real do vídeo
 - manter letterboxing em vez de esticar o quadro vertical
 
+### 2026-05-02 - Galeria do iPhone derrubava a conexão ao abrir mídia
+
+**Contexto**: O espelhamento conectava, mas ao entrar na galeria do iPhone e tocar em uma mídia a sessão caía e a TV ficava preta.
+
+**Causa raiz**:
+- o servidor em `7000` tratava praticamente tudo como RTSP de mirroring
+- o anúncio de capacidades (`features`) expunha suporte amplo de AirPlay, incluindo caminhos que o app ainda não implementava de verdade
+- ao abrir foto/slideshow, o iPhone podia trocar para o fluxo HTTP de AirPlay (`/server-info`, `/photo`, `/slideshows/1`, `/stop`) e o servidor respondia como método desconhecido, encerrando a conexão
+
+**Solução implementada**:
+- adicionar roteamento nativo explícito entre fluxo RTSP/mirroring e fluxo HTTP de mídia
+- suportar `GET /server-info`, `GET /slideshow-features`, `PUT /photo`, `PUT /slideshows/1` e `POST /stop`
+- implementar cache de fotos para `cacheOnly` e `displayCached`, incluindo `412 Precondition Failed` quando o asset não existir
+- expor callbacks JNI para foto/slideshow e refletir isso na UI com uma nova tela de `MediaPlayback`
+- reduzir `AIRPLAY_FEATURES` para não anunciar `Video`, `VideoFairPlay`, `VideoVolumeControl` e `VideoHTTPLiveStreams` antes de existir suporte real a vídeo HTTP
+- responder endpoints de vídeo HTTP ainda não suportados com `501 Not Implemented`, sem derrubar a conexão
+
+**Resultado esperado**:
+- abrir fotos e slideshows da galeria não derruba mais a sessão
+- mirroring legado continua funcional
+- suporte a vídeo HTTP direto fica como próxima fase separada
+
+### 2026-05-02 - Instrumentação focada em mídia HTTP do iPhone
+
+**Contexto**: Após a primeira implementação de `photo/slideshow`, o teste real na TV ainda falhou e os logs disponíveis misturavam ruído de transporte com pouca informação sobre o caminho crítico da galeria do iPhone.
+
+**Ajuste aplicado**:
+- reduzir logs repetitivos no `MirrorServer` que não ajudam nesse bug (`created/destroyed`, `waiting for client`, heartbeats e forwarding periódico)
+- trocar o log genérico de request por trilhas estruturadas no servidor nativo com:
+  - `requestLine`, `path`, `sessionId`, `bodyBytes`
+  - detalhes de `PUT /photo` (`assetAction`, `assetKey`, `transition`, bytes, cache hit/miss)
+  - detalhes de `PUT /slideshows/1` (`state`, `theme`, `slideDuration`, último asset, cache`)
+  - motivo explícito para `412`, `400`, `404` e `501`
+- adicionar logs no bridge Android para confirmar:
+  - chegada dos callbacks JNI de foto/slideshow/stop
+  - transição do `AirPlayService` para modo de mídia HTTP
+  - transição da UI para `MediaPlayback` ou retorno a `Idle`
+
+**Objetivo**:
+- responder com clareza se a falha está no roteamento HTTP nativo, no callback JNI, na troca de estado do serviço/UI ou no contrato específico enviado pelo iPhone real
+
+### 2026-05-02 - Correção para reconfiguração excessiva do decoder ao abrir mídia no iPhone
+
+**Contexto**: A nova instrumentação mostrou que, no teste real, o iPhone não entrou no fluxo HTTP `photo/slideshow`. Ele permaneceu em `mirroring`, mas ao abrir a mídia passou a enviar novos `codec config` type `1`, e o app reiniciava o `VideoDecoder` repetidamente até perder o ponto de retomada do stream.
+
+**Sinais observados nos logs**:
+- novos `Received codec config` durante a mesma sessão
+- `Stopping existing decoder before reconfiguration`
+- `Dropping pre-start non-keyframe while waiting for an IDR`
+- `Video decoder stopped (decoded=0, dropped=...)`
+- `Mirror TCP header read failed or closed` seguido de `TEARDOWN`
+
+**Correção aplicada**:
+- o `AirPlayService` agora mantém o último `codec config` efetivamente aplicado
+- se um novo `codec config` chegar enquanto o decoder estiver `Running` e a resolução permanecer a mesma, a atualização é ignorada sem reiniciar o decoder
+- os logs agora indicam explicitamente se o update foi ignorado por `sameResolution` ou se houve reconfiguração real por mudança de resolução
+- reset do `codec config` aplicado ao encerrar o pipeline
+
+**Hipótese operacional**:
+- para o fluxo de mirroring do iPhone neste MVP, os updates de SPS/PPS dentro da mesma resolução devem ser absorvidos pelo stream/decoder sem restart manual
+- o restart passa a ficar reservado para mudanças reais de resolução, reduzindo a chance de perder o próximo IDR ao abrir mídia na galeria
+
+### 2026-05-02 - Queda posterior causada por contrato incorreto no caminho de áudio RTP
+
+**Contexto**: Após estabilizar o vídeo, o espelhamento com a mídia aberta passou a funcionar por mais tempo, mas caía alguns segundos depois. O log mostrou um novo `SETUP` de áudio na mesma sessão, seguido de chegada de RTP/RTCP e depois `TEARDOWN` enviado pelo iPhone.
+
+**Causa identificada**:
+- o `RTPReceiver` nativo já removia o header RTP e entregava apenas o payload ao Kotlin
+- `ProtocolHandler.onAudioData()` tratava esse payload como se ainda fosse um pacote RTP completo e tentava parseá-lo novamente
+- com isso, os Access Units AAC não eram extraídos nem enfileirados no `AudioDecoder`, deixando o stream de áudio adicional sem tratamento real
+
+**Correção aplicada**:
+- `onAudioData()` passou a tratar a entrada como payload `MPEG4-generic`
+- implementação de parsing dos `AU headers` RFC 3640 para extrair os Access Units AAC
+- enfileiramento direto desses Access Units no `AudioDecoder`
+- logs novos para os primeiros payloads/Access Units de áudio
+
+**Objetivo do próximo teste**:
+- confirmar que, após o `SETUP` de áudio, aparecem logs de `Audio payload received` e `Queueing AAC access unit`
+- verificar se a sessão deixa de terminar com `TEARDOWN` logo após a ativação do áudio
+
 ### [Espaço para registrar problemas durante desenvolvimento]
 
 **Template para novos problemas**:
