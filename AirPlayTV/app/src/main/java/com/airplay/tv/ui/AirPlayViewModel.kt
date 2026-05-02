@@ -59,8 +59,8 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
     }
 
     init {
-        // Inicializar com estado Idle
-        uiStateManager.returnToIdle(Constants.DEFAULT_DEVICE_NAME)
+        // Inicializar com estado Startup
+        // A transição para Idle acontecerá quando o serviço estiver pronto
         
         // Observar estado do mDNS
         viewModelScope.launch {
@@ -68,9 +68,21 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
                 when (state) {
                     is mDNSModule.ServiceState.Registered -> {
                         Logger.i(Logger.TAG_MDNS, "mDNS service registered: ${state.serviceName}")
+                        // Transicionar para Idle quando o serviço estiver registrado
+                        if (uiStateManager.isInState(UIStateManager.UIState.Startup::class)) {
+                            uiStateManager.transitionTo(
+                                UIStateManager.UIState.Idle(Constants.DEFAULT_DEVICE_NAME)
+                            )
+                        }
                     }
                     is mDNSModule.ServiceState.Failed -> {
                         Logger.e(Logger.TAG_MDNS, "mDNS registration failed: ${state.message}")
+                        // Se falhar durante startup, mostrar erro
+                        if (uiStateManager.isInState(UIStateManager.UIState.Startup::class)) {
+                            uiStateManager.transitionTo(
+                                UIStateManager.UIState.Error("Falha ao iniciar serviço: ${state.message}")
+                            )
+                        }
                     }
                     else -> {}
                 }

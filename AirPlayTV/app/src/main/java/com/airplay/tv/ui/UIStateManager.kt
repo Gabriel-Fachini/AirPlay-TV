@@ -15,6 +15,11 @@ class UIStateManager {
      */
     sealed class UIState {
         /**
+         * Estado de inicialização: servidor está iniciando
+         */
+        data object Startup : UIState()
+        
+        /**
          * Estado inicial: aguardando conexão
          */
         data class Idle(val deviceName: String) : UIState()
@@ -39,13 +44,17 @@ class UIStateManager {
         data class Error(val message: String, val throwable: Throwable? = null) : UIState()
     }
     
-    private val _currentState = MutableStateFlow<UIState>(UIState.Idle(""))
+    private val _currentState = MutableStateFlow<UIState>(UIState.Startup)
     val currentState: StateFlow<UIState> = _currentState.asStateFlow()
     
     /**
      * Transições permitidas entre estados
      */
     private val allowedTransitions = mapOf(
+        UIState.Startup::class to setOf(
+            UIState.Idle::class,
+            UIState.Error::class
+        ),
         UIState.Idle::class to setOf(
             UIState.Connecting::class,
             UIState.Mirroring::class,
