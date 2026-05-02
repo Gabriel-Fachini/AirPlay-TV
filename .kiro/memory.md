@@ -287,7 +287,46 @@ Projeto iniciado para criar receptor AirPlay minimalista para Android TV Sony (K
 ---
 
 ### Fase 2: Estrutura Base do Projeto
-[Espaço para notas durante Fase 2]
+
+#### 2026-05-02 - Fase 2 Completa: Estrutura Base Implementada
+
+**Status**: ✅ Completa e testada
+
+**Entregáveis Implementados**:
+
+1. **Task 2.1: Projeto Android TV Criado**
+   - ✅ Projeto configurado com API mínima 28 (Android 9)
+   - ✅ build.gradle.kts com todas dependências
+   - ✅ NDK configurado (armeabi-v7a, arm64-v8a)
+   - ✅ CMake configurado (preparado para Fase 4)
+   - ✅ AndroidManifest.xml com permissões de rede
+   - ✅ Proguard configurado (keep JNI symbols)
+
+2. **Task 2.2: UI Base e Máquina de Estados**
+   - ✅ MainActivity implementada com Jetpack Compose
+   - ✅ UIStateManager com sealed class UIState (4 estados)
+   - ✅ Validação de transições entre estados
+   - ✅ 4 telas Compose implementadas
+   - ✅ AirPlayViewModel com StateFlow
+
+3. **Task 2.3: Logging e Telemetria**
+   - ✅ Logger.kt com 7 tags por componente
+   - ✅ TelemetryCollector com métricas completas
+   - ✅ Debug overlay implementado
+
+**Correções Aplicadas**:
+- Adicionado @OptIn para APIs experimentais do androidx.tv
+- Build funcional: 27 MB APK
+
+**Testes Realizados**:
+- ✅ Projeto compila sem erros
+- ✅ APK gerado com sucesso
+- ✅ Navegação entre estados funcional no emulador
+- ✅ Logs funcionando corretamente
+
+**Arquivos Criados**: 30+ arquivos, ~1500 linhas de código
+
+**Próximos Passos**: Iniciar Fase 3 - Descoberta mDNS
 
 ### Fase 3: Descoberta na Rede (mDNS)
 [Espaço para notas durante Fase 3]
@@ -353,5 +392,22 @@ Projeto iniciado para criar receptor AirPlay minimalista para Android TV Sony (K
 
 ---
 
-**Última atualização**: 2026-05-01
+## 💡 Lições Aprendidas - Fase 2
+
+### 2026-05-02 - Documentação Excessiva
+
+**Lição**: Não criar documentações desnecessárias sem solicitação explícita do usuário.
+
+**Contexto**: Durante a Fase 2, foram criados múltiplos arquivos markdown de documentação (guias, troubleshooting, etc.) sem que o usuário pedisse.
+
+**Aplicação**: 
+- Criar apenas documentação essencial (README básico)
+- Aguardar solicitação explícita para guias detalhados
+- Focar em código funcional, não em documentação preventiva
+
+**Recomendação**: Perguntar antes de criar documentação extensa.
+
+---
+
+**Última atualização**: 2026-05-02
 **Responsável**: Equipe de desenvolvimento (agentes de IA + desenvolvedor)

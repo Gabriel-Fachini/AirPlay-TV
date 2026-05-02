@@ -133,6 +133,17 @@ Este documento orienta agentes de IA que trabalharão na implementação deste p
 
 ## 📝 Convenções de Código
 
+### Documentação
+
+**IMPORTANTE**: Não criar documentações desnecessárias sem solicitação explícita.
+
+- ✅ README.md básico no projeto
+- ✅ Comentários no código quando necessário
+- ❌ Múltiplos guias (TESTING.md, TROUBLESHOOTING.md, etc.) sem pedido
+- ❌ Documentação "preventiva" ou "por precaução"
+
+**Regra**: Perguntar antes de criar documentação extensa.
+
 ### Estrutura de Arquivos
 
 ```

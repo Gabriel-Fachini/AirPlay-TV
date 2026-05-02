@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AirPlay TV</string>
+    
+    <!-- UI States -->
+    <string name="state_idle_title">Pronto para Conectar</string>
+    <string name="state_idle_subtitle">Abra o AirPlay no seu Mac, iPhone ou iPad</string>
+    <string name="state_idle_device_name">Nome do receptor: %1$s</string>
+    
+    <string name="state_connecting_title">Conectando…</string>
+    <string name="state_connecting_subtitle">Aguarde enquanto estabelecemos a conexão</string>
+    
+    <string name="state_mirroring_hint">Pressione VOLTAR para encerrar</string>
+    
+    <string name="state_error_title">Erro</string>
+    <string name="state_error_button">OK</string>
+    
+    <!-- Error Messages -->
+    <string name="error_mdns_registration_failed">Falha ao registrar serviço mDNS</string>
+    <string name="error_handshake_failed">Falha no handshake AirPlay</string>
+    <string name="error_decoder_failed">Falha na decodificação de mídia</string>
+    <string name="error_network_timeout">Conexão perdida (timeout)</string>
+    <string name="error_unknown">Erro desconhecido: %1$s</string>
+    
+    <!-- Debug Overlay -->
+    <string name="debug_fps">FPS: %1$.1f</string>
+    <string name="debug_latency">Latência: %1$d ms</string>
+    <string name="debug_resolution">Resolução: %1$dx%2$d</string>
+    <string name="debug_bitrate">Bitrate: %1$.1f Mbps</string>
+    <string name="debug_dropped_frames">Frames perdidos: %1$d</string>
+</resources>
