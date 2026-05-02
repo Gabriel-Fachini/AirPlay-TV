@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+
+# IntelliJ / Android Studio
+.idea/
+*.iml
+
+# Gradle
+.gradle/
+build/
+
+# Android
+local.properties
+captures/
+.cxx/
+
+# Kotlin
+out/
+
+# Signing
+*.jks
+*.keystore
+keystore.properties
+
+# Logs
+*.log
