@@ -92,6 +92,11 @@ class RTPParser {
      * @return RTPPacket parseado ou null se inválido
      */
     fun parsePacket(data: ByteArray, size: Int): RTPPacket? {
+        // Pacotes de 4 bytes são heartbeats/timing packets - ignorar silenciosamente
+        if (size == 4) {
+            return null
+        }
+        
         if (size < RTP_HEADER_SIZE) {
             Logger.w(Logger.TAG_PROTOCOL, "RTP packet too small: $size bytes")
             return null

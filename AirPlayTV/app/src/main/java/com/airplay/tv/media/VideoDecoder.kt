@@ -100,6 +100,7 @@ class VideoDecoder(
     private var fpsCounter = 0
     private var currentFps = 0
     private var submittedInputFrames = 0L
+    private var sessionStartTimeUs = 0L  // Tempo de início da sessão (para cálculo de latência)
     
     // Monitoramento de performance
     private var lowFpsCounter = 0
@@ -171,6 +172,9 @@ class VideoDecoder(
             
             // Resetar métricas
             resetMetrics()
+            
+            // Inicializar tempo de início da sessão (em microsegundos)
+            sessionStartTimeUs = System.currentTimeMillis() * 1000L
             
             // Iniciar thread de decodificação com prioridade alta
             decoderJob = scope.launch {
@@ -421,9 +425,12 @@ class VideoDecoder(
                 framesDecoded++
                 updateFps()
                 
-                // Calcular latência (timestamp do frame vs tempo atual)
-                val currentTimeUs = System.nanoTime() / 1000
-                val latencyUs = currentTimeUs - bufferInfo.presentationTimeUs
+                // Calcular latência corretamente:
+                // presentationTimeUs é relativo ao início da sessão
+                // Precisamos comparar com o tempo atual também relativo ao início da sessão
+                val currentTimeUs = System.currentTimeMillis() * 1000L
+                val elapsedSinceSessionStartUs = currentTimeUs - sessionStartTimeUs
+                val latencyUs = elapsedSinceSessionStartUs - bufferInfo.presentationTimeUs
                 val latencyMs = latencyUs / 1000
                 
                 // Atualizar telemetria

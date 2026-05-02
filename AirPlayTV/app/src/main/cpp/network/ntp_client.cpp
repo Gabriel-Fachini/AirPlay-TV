@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <cstring>
 #include <chrono>
+#include <sys/time.h>
 
 #define TAG "AirPlay:NTP"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -14,10 +15,8 @@
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, TAG, __VA_ARGS__)
 
 NTPClient::NTPClient()
-    : sendSocket_(-1)
-    , receiveSocket_(-1)
+    : socket_(-1)
     , clientPort_(7010)
-    , serverPort_(7011)
     , running_(false)
     , sessionStartTime_(0)
 {
@@ -36,36 +35,19 @@ bool NTPClient::start(const std::string& clientIp, int clientPort) {
     clientIp_ = clientIp;
     clientPort_ = clientPort;
 
-    // Create UDP socket for sending requests
-    sendSocket_ = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sendSocket_ < 0) {
-        LOGE("Failed to create NTP send socket: %s", strerror(errno));
+    // Create UDP socket (same socket for send and receive)
+    socket_ = socket(AF_INET, SOCK_DGRAM, 0);
+    if (socket_ < 0) {
+        LOGE("Failed to create NTP socket: %s", strerror(errno));
         return false;
     }
 
-    // Create UDP socket for receiving responses
-    receiveSocket_ = socket(AF_INET, SOCK_DGRAM, 0);
-    if (receiveSocket_ < 0) {
-        LOGE("Failed to create NTP receive socket: %s", strerror(errno));
-        close(sendSocket_);
-        sendSocket_ = -1;
-        return false;
-    }
-
-    // Bind receive socket to port 7011
-    struct sockaddr_in serverAddr;
-    memset(&serverAddr, 0, sizeof(serverAddr));
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_port = htons(serverPort_);
-
-    if (bind(receiveSocket_, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
-        LOGE("Failed to bind NTP receive socket to port %d: %s", serverPort_, strerror(errno));
-        close(sendSocket_);
-        close(receiveSocket_);
-        sendSocket_ = -1;
-        receiveSocket_ = -1;
-        return false;
+    // Set receive timeout to allow checking running_ flag
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 300000; // 300ms timeout like RPiPlay
+    if (setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        LOGW("Failed to set socket timeout: %s", strerror(errno));
     }
 
     // Record session start time
@@ -74,11 +56,10 @@ bool NTPClient::start(const std::string& clientIp, int clientPort) {
     ).count();
 
     running_ = true;
-    sendThread_ = std::thread(&NTPClient::sendThread, this);
-    receiveThread_ = std::thread(&NTPClient::receiveThread, this);
+    thread_ = std::thread(&NTPClient::ntpThread, this);
 
-    LOGI("NTP client started: sending to %s:%d, receiving on port %d", 
-         clientIp.c_str(), clientPort, serverPort_);
+    LOGI("NTP client started, sending to %s:%d every 3 seconds", 
+         clientIp.c_str(), clientPort);
     return true;
 }
 
@@ -90,31 +71,26 @@ void NTPClient::stop() {
     LOGI("Stopping NTP client");
     running_ = false;
 
-    if (sendThread_.joinable()) {
-        sendThread_.join();
+    if (thread_.joinable()) {
+        thread_.join();
     }
 
-    if (receiveThread_.joinable()) {
-        receiveThread_.join();
-    }
-
-    if (sendSocket_ >= 0) {
-        close(sendSocket_);
-        sendSocket_ = -1;
-    }
-
-    if (receiveSocket_ >= 0) {
-        close(receiveSocket_);
-        receiveSocket_ = -1;
+    if (socket_ >= 0) {
+        close(socket_);
+        socket_ = -1;
     }
 
     LOGI("NTP client stopped");
 }
 
-void NTPClient::sendThread() {
+void NTPClient::ntpThread() {
     int requestCount = 0;
+    int responseCount = 0;
+
+    LOGI("NTP thread started");
 
     while (running_) {
+        // Send NTP request
         sendNTPRequest();
         requestCount++;
 
@@ -123,88 +99,58 @@ void NTPClient::sendThread() {
                  requestCount, clientIp_.c_str(), clientPort_);
         }
 
+        // Try to receive response (with timeout)
+        uint8_t response[128];
+        struct sockaddr_in fromAddr;
+        socklen_t fromLen = sizeof(fromAddr);
+        
+        memset(&fromAddr, 0, sizeof(fromAddr));
+        fromLen = sizeof(fromAddr);
+        
+        ssize_t received = recvfrom(socket_, response, sizeof(response), 0,
+                                    (struct sockaddr*)&fromAddr, &fromLen);
+        
+        if (received > 0) {
+            responseCount++;
+            if (responseCount <= 3 || responseCount % 10 == 0) {
+                LOGI("Received NTP response #%d (%zd bytes) from %s:%d", 
+                     responseCount, received, inet_ntoa(fromAddr.sin_addr),
+                     ntohs(fromAddr.sin_port));
+            }
+            LOGD("NTP response: first byte=0x%02x, second=0x%02x", response[0], response[1]);
+        } else if (received < 0) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                LOGE("NTP receive error: %s (errno=%d)", strerror(errno), errno);
+            } else {
+                // Timeout - log occasionally
+                if (requestCount <= 3 || requestCount % 10 == 0) {
+                    LOGD("NTP receive timeout (normal, waiting for response)");
+                }
+            }
+        }
+
         // Wait 3 seconds before next request
         for (int i = 0; i < 30 && running_; i++) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
 
-    LOGI("NTP send thread ended");
-}
-
-void NTPClient::receiveThread() {
-    uint8_t buffer[48];
-    struct sockaddr_in clientAddr;
-    socklen_t clientLen = sizeof(clientAddr);
-    int responseCount = 0;
-
-    LOGI("NTP receive thread started, listening on port %d", serverPort_);
-
-    while (running_) {
-        // Set timeout for recvfrom to allow checking running_ flag
-        struct timeval tv;
-        tv.tv_sec = 1;
-        tv.tv_usec = 0;
-        setsockopt(receiveSocket_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-        ssize_t received = recvfrom(receiveSocket_, buffer, sizeof(buffer), 0,
-                                    (struct sockaddr*)&clientAddr, &clientLen);
-        
-        if (received > 0) {
-            responseCount++;
-            if (responseCount <= 3 || responseCount % 10 == 0) {
-                LOGI("Received NTP response #%d (%zd bytes) from %s", 
-                     responseCount, received, inet_ntoa(clientAddr.sin_addr));
-            }
-            LOGD("NTP response: flags=0x%02x stratum=%d", buffer[0], buffer[1]);
-        } else if (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            if (running_) {
-                LOGE("NTP receive error: %s", strerror(errno));
-            }
-        }
-    }
-
-    LOGI("NTP receive thread ended (received %d responses)", responseCount);
+    LOGI("NTP thread ended (sent=%d, received=%d)", requestCount, responseCount);
 }
 
 void NTPClient::sendNTPRequest() {
-    // NTP packet structure (48 bytes)
-    uint8_t packet[48];
-    memset(packet, 0, sizeof(packet));
+    // NTP request packet format from RPiPlay
+    // This is NOT standard NTP, it's Apple's custom format for AirPlay timing
+    uint8_t request[32] = {
+        0x80, 0xd2, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    };
 
-    // NTP header according to documentation:
-    // Flags: 0x23 (version 4, mode 3 = client)
-    packet[0] = 0x23;
-    
-    // Stratum: 0 (unspecified)
-    packet[1] = 0x00;
-    
-    // Poll interval: 0
-    packet[2] = 0x00;
-    
-    // Precision: 0
-    packet[3] = 0x00;
-
-    // Root delay, root dispersion, reference ID: all zeros (already set by memset)
-
-    // Transmit timestamp (last 8 bytes): time since session start
-    // Documentation says: "The reference date for the timestamps is the beginning of the mirroring session"
+    // Put current timestamp at offset 24 (bytes 24-31)
     uint64_t timestamp = getTimestamp();
-    
-    // NTP timestamp format: seconds in first 4 bytes, fraction in last 4 bytes
-    // Convert microseconds to NTP format
-    uint32_t seconds = static_cast<uint32_t>(timestamp / 1000000);
-    uint32_t fraction = static_cast<uint32_t>((timestamp % 1000000) * 4294.967296); // Convert to 2^32 fraction
-
-    // Write timestamp in big-endian (network byte order)
-    packet[40] = (seconds >> 24) & 0xFF;
-    packet[41] = (seconds >> 16) & 0xFF;
-    packet[42] = (seconds >> 8) & 0xFF;
-    packet[43] = seconds & 0xFF;
-    packet[44] = (fraction >> 24) & 0xFF;
-    packet[45] = (fraction >> 16) & 0xFF;
-    packet[46] = (fraction >> 8) & 0xFF;
-    packet[47] = fraction & 0xFF;
+    putNTPTimestamp(request, 24, timestamp);
 
     // Send to client
     struct sockaddr_in addr;
@@ -213,20 +159,40 @@ void NTPClient::sendNTPRequest() {
     addr.sin_port = htons(clientPort_);
     inet_pton(AF_INET, clientIp_.c_str(), &addr.sin_addr);
 
-    ssize_t sent = sendto(sendSocket_, packet, sizeof(packet), 0,
+    ssize_t sent = sendto(socket_, request, sizeof(request), 0,
                           (struct sockaddr*)&addr, sizeof(addr));
     
     if (sent < 0) {
         LOGE("Failed to send NTP request: %s", strerror(errno));
+    } else {
+        LOGD("Sent NTP packet: 0x%02x 0x%02x 0x%02x 0x%02x... (%zd bytes)", 
+             request[0], request[1], request[2], request[3], sent);
     }
 }
 
 uint64_t NTPClient::getTimestamp() {
-    // Get current time
-    uint64_t now = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::system_clock::now().time_since_epoch()
-    ).count();
+    // Get current time in microseconds
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    return (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
+}
 
-    // Return time since session start (in microseconds)
-    return now - sessionStartTime_;
+void NTPClient::putNTPTimestamp(uint8_t* buffer, int offset, uint64_t microseconds) {
+    // Convert microseconds to NTP timestamp format
+    // NTP uses epoch of 1900, Unix uses 1970
+    // Need to add the difference: 2208988800 seconds
+    const uint64_t SECONDS_FROM_1900_TO_1970 = 2208988800ULL;
+    
+    uint64_t seconds = (microseconds / 1000000ULL) + SECONDS_FROM_1900_TO_1970;
+    uint64_t fraction = ((microseconds % 1000000ULL) << 32) / 1000000ULL;
+
+    // Write in big-endian (network byte order)
+    buffer[offset + 0] = (seconds >> 24) & 0xFF;
+    buffer[offset + 1] = (seconds >> 16) & 0xFF;
+    buffer[offset + 2] = (seconds >> 8) & 0xFF;
+    buffer[offset + 3] = seconds & 0xFF;
+    buffer[offset + 4] = (fraction >> 24) & 0xFF;
+    buffer[offset + 5] = (fraction >> 16) & 0xFF;
+    buffer[offset + 6] = (fraction >> 8) & 0xFF;
+    buffer[offset + 7] = fraction & 0xFF;
 }
