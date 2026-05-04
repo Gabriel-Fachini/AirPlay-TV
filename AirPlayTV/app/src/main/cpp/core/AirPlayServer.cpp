@@ -8,7 +8,7 @@
  * - network/mirror_server: TCP mirroring server
  */
 
-#include "airplay_server.h"
+#include "AirPlayServer.h"
 #include "protocol/rtsp_handler.h"
 #include "protocol/fairplay_handler.h"
 #include "network/rtp_receiver.h"
@@ -30,37 +30,20 @@
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
-// Forward declaration for JNI callback
-std::vector<uint8_t> invokeByteArrayCallback(
-    const char* methodName,
-    const uint8_t* data,
-    size_t size,
-    bool* ok);
+#include "jni/JniBridge.h"
 
 AirPlayServer::AirPlayServer()
-    : running_(false)
-    , serverSocket_(-1)
-    , port_(0)
-    , dataSocket_(-1)
-    , controlSocket_(-1)
-    , timingSocket_(-1)
-    , rtpRunning_(false)
-    , mirrorVideoSocket_(-1)
-    , mirrorVideoPort_(0)
-    , mirrorVideoRunning_(false)
-    , videoWidth_(1920)
-    , videoHeight_(1080)
-    , audioSampleRate_(44100)
-    , audioChannels_(2)
-    , sessionAnnounced_(false)
-    , mediaSessionAnnounced_(false)
-    , slideshowActive_(false)
-    , slideshowDurationSeconds_(0)
+    : sessionManager_(std::make_unique<SessionManager>())
+    , mediaOrchestrator_(std::make_unique<MediaOrchestrator>())
     , rtspHandler_(std::make_unique<RTSPHandler>())
     , fairplayHandler_(std::make_unique<FairPlayHandler>())
+    , routeDispatcher_(std::make_unique<RouteDispatcher>())
 {
     LOGI("AirPlayServer created");
-    resetAudioSessionConfig();
+    
+    sessionManager_->setClientConnectedCallback([this](int socket, const std::string& ip) {
+        handleClient(socket, ip);
+    });
 }
 
 AirPlayServer::~AirPlayServer() {
@@ -69,122 +52,23 @@ AirPlayServer::~AirPlayServer() {
 }
 
 bool AirPlayServer::start(int port) {
-    if (running_) {
-        LOGW("Server already running");
-        return false;
-    }
-
-    port_ = port;
-    
-    // Create TCP socket
-    serverSocket_ = socket(AF_INET, SOCK_STREAM, 0);
-    if (serverSocket_ < 0) {
-        LOGE("Failed to create socket");
-        if (onError_) onError_("Failed to create socket");
-        return false;
-    }
-
-    // Allow address reuse
-    NetworkUtils::setSocketReuseAddr(serverSocket_);
-
-    // Bind
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(port_);
-
-    if (bind(serverSocket_, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        LOGE("Failed to bind to port %d", port_);
-        close(serverSocket_);
-        serverSocket_ = -1;
-        if (onError_) onError_("Failed to bind to port");
-        return false;
-    }
-
-    // Listen
-    if (listen(serverSocket_, 1) < 0) {
-        LOGE("Failed to listen");
-        close(serverSocket_);
-        serverSocket_ = -1;
-        if (onError_) onError_("Failed to listen");
-        return false;
-    }
-
-    running_ = true;
-    serverThread_ = std::thread(&AirPlayServer::serverThread, this);
-
-    LOGI("RTSP server started on port %d", port_);
-    return true;
+    return sessionManager_->start(port);
 }
 
 void AirPlayServer::stop() {
-    if (!running_) {
-        return;
-    }
-
-    LOGI("Stopping RTSP server");
-    running_ = false;
-
-    // Stop RTP receiver and mirror server first
-    stopRTPReceiver();
-    stopMirrorVideoServer();
-
-    // Close socket to unblock accept()
-    if (serverSocket_ >= 0) {
-        shutdown(serverSocket_, SHUT_RDWR);
-        close(serverSocket_);
-        serverSocket_ = -1;
-    }
-
-    // Wait for thread to finish
-    if (serverThread_.joinable()) {
-        serverThread_.join();
-    }
-
-    LOGI("RTSP server stopped");
+    sessionManager_->stop();
+    mediaOrchestrator_->stopRTPReceiver();
+    mediaOrchestrator_->stopMirrorVideoServer();
+    mediaOrchestrator_->stopNTPClient();
 }
 
-void AirPlayServer::serverThread() {
-    LOGI("Server thread started");
-
-    while (running_) {
-        struct sockaddr_in clientAddr;
-        socklen_t clientLen = sizeof(clientAddr);
-
-        int clientSocket = accept(serverSocket_, (struct sockaddr*)&clientAddr, &clientLen);
-        
-        if (clientSocket < 0) {
-            if (running_) {
-                LOGE("Accept failed");
-            }
-            break;
-        }
-
-        clientIp_ = inet_ntoa(clientAddr.sin_addr);
-        sessionAnnounced_ = false;
-        mediaSessionAnnounced_ = false;
-        resetMediaPlaybackState();
-        resetAudioSessionConfig();
-        LOGI("Client connected from %s", clientIp_.c_str());
-
-        handleClient(clientSocket);
-
-        close(clientSocket);
-        stopMirrorVideoServer();
-        stopRTPReceiver();
-        
-        if (onDisconnection_) {
-            onDisconnection_();
-        }
-        
-        LOGI("Client disconnected");
-    }
-
-    LOGI("Server thread ended");
-}
-
-void AirPlayServer::handleClient(int clientSocket) {
+void AirPlayServer::handleClient(int clientSocket, const std::string& clientIp) {
+    clientIp_ = clientIp;
+    sessionAnnounced_ = false;
+    routeDispatcher_->resetSessionState();
+    routeDispatcher_->setClientIp(clientIp);
+    resetAudioSessionConfig();
+    
     char buffer[4096];
     std::string requestBuffer;
 
@@ -194,7 +78,7 @@ void AirPlayServer::handleClient(int clientSocket) {
 
     // Setup callbacks for handlers
     rtspHandler_->setSetupCallback([this](const uint8_t* data, size_t size, bool* ok) {
-        return invokeByteArrayCallback("onSetupRequest", data, size, ok);
+        return JniBridge::invokeByteArrayCallback("onSetupRequest", data, size, ok);
     });
 
     rtspHandler_->setRecordCallback([this]() {
@@ -202,26 +86,19 @@ void AirPlayServer::handleClient(int clientSocket) {
             sessionAnnounced_ = true;
             onConnection_(clientIp_);
         }
-        startRTPReceiver();
-        
-        // Start NTP client for time synchronization (required for mirroring)
-        if (!ntpClient_) {
-            ntpClient_ = std::make_unique<NTPClient>();
-        }
-        if (!clientIp_.empty() && !ntpClient_->isRunning()) {
-            ntpClient_->start(clientIp_, 7010);
-        }
+        mediaOrchestrator_->startRTPReceiver();
+        mediaOrchestrator_->startNTPClient(clientIp_);
     });
 
     fairplayHandler_->setPairSetupCallback([](const uint8_t* data, size_t size, bool* ok) {
-        return invokeByteArrayCallback("onPairSetup", data, size, ok);
+        return JniBridge::invokeByteArrayCallback("onPairSetup", data, size, ok);
     });
 
     fairplayHandler_->setPairVerifyCallback([](const uint8_t* data, size_t size, bool* ok) {
-        return invokeByteArrayCallback("onPairVerify", data, size, ok);
+        return JniBridge::invokeByteArrayCallback("onPairVerify", data, size, ok);
     });
 
-    while (running_) {
+    while (sessionManager_->isRunning()) {
         ssize_t bytesRead = recv(clientSocket, buffer, sizeof(buffer), 0);
         
         if (bytesRead <= 0) {
@@ -379,7 +256,9 @@ void AirPlayServer::handleOptions(int socket, const std::string& cseq) {
 void AirPlayServer::handleSetup(int socket, const std::string& cseq, const std::string& request) {
     if (rtspHandler_) {
         rtspHandler_->handleSetup(socket, cseq, request);
-        rtspHandler_->parseSetupParams(request, &videoWidth_, &videoHeight_, &audioSampleRate_, &audioChannels_);
+        int audioSampleRate = mediaOrchestrator_->getAudioSampleRate();
+        int audioChannels = mediaOrchestrator_->getAudioChannels();
+        rtspHandler_->parseSetupParams(request, &videoWidth_, &videoHeight_, &audioSampleRate, &audioChannels);
     }
 }
 
@@ -441,124 +320,11 @@ void AirPlayServer::handleFairPlaySetup(int socket, const std::string& cseq, con
 
 void AirPlayServer::parseSetupParams(const std::string& request) {
     if (rtspHandler_) {
-        rtspHandler_->parseSetupParams(request, &videoWidth_, &videoHeight_, &audioSampleRate_, &audioChannels_);
+        int audioSampleRate = mediaOrchestrator_->getAudioSampleRate();
+        int audioChannels = mediaOrchestrator_->getAudioChannels();
+        rtspHandler_->parseSetupParams(request, &videoWidth_, &videoHeight_, &audioSampleRate, &audioChannels);
     }
 }
-
-// ============================================================================
-// RTP Receiver - Delegate to RTPReceiver
-// ============================================================================
-
-void AirPlayServer::startRTPReceiver() {
-    if (rtpReceiver_ && rtpReceiver_->isRunning()) {
-        LOGW("RTP receiver already running");
-        return;
-    }
-
-    LOGI("Starting RTP receiver");
-
-    rtpReceiver_ = std::make_unique<RTPReceiver>();
-
-    // Setup callbacks
-    rtpReceiver_->setVideoDataCallback(onVideoData_);
-    rtpReceiver_->setAudioDataCallback(onAudioData_);
-    rtpReceiver_->setAudioSyncCallback(onAudioSync_);
-    rtpReceiver_->setErrorCallback(onError_);
-    rtpReceiver_->setAudioConfig(audioSessionConfig_.compressionType, audioSessionConfig_.sampleRate);
-
-    if (rtpReceiver_->start(
-            audioSessionConfig_.localDataPort,
-            audioSessionConfig_.localControlPort,
-            audioSessionConfig_.localTimingPort)) {
-        rtpRunning_ = true;
-        LOGI("RTP receiver started successfully");
-    } else {
-        LOGE("Failed to start RTP receiver");
-        rtpReceiver_.reset();
-    }
-}
-
-void AirPlayServer::updateAudioSessionConfig(const AudioSessionConfig& config) {
-    audioSessionConfig_ = config;
-    audioSampleRate_ = config.sampleRate;
-    audioChannels_ = config.channels;
-    if (rtpReceiver_) {
-        rtpReceiver_->setAudioConfig(audioSessionConfig_.compressionType, audioSessionConfig_.sampleRate);
-    }
-}
-
-void AirPlayServer::resetAudioSessionConfig() {
-    audioSessionConfig_ = AudioSessionConfig();
-    audioSampleRate_ = audioSessionConfig_.sampleRate;
-    audioChannels_ = audioSessionConfig_.channels;
-}
-
-void AirPlayServer::stopRTPReceiver() {
-    if (!rtpRunning_) {
-        return;
-    }
-
-    LOGI("Stopping RTP receiver");
-    rtpRunning_ = false;
-    if (rtpReceiver_) {
-        rtpReceiver_->stop();
-        rtpReceiver_.reset();
-    }
-    
-    // Stop NTP client
-    if (ntpClient_) {
-        ntpClient_->stop();
-        ntpClient_.reset();
-    }
-}
-
-// These methods are now handled by RTPReceiver module
-void AirPlayServer::receiveDataThread() { /* Handled by RTPReceiver */ }
-void AirPlayServer::receiveControlThread() { /* Handled by RTPReceiver */ }
-void AirPlayServer::receiveTimingThread() { /* Handled by RTPReceiver */ }
-bool AirPlayServer::bindUDPSocket(int socket, int port) { return false; }
-void AirPlayServer::processRTPPacket(const uint8_t* data, size_t size) { /* Handled by RTPReceiver */ }
-
-// ============================================================================
-// Mirror Server - Delegate to MirrorServer
-// ============================================================================
-
-int AirPlayServer::startMirrorVideoServer() {
-    if (mirrorServer_ && mirrorServer_->isRunning()) {
-        return mirrorServer_->getPort();
-    }
-
-    mirrorServer_ = std::make_unique<MirrorServer>();
-    mirrorServer_->setPacketCallback(onMirroringVideoPacket_);
-
-    int port = mirrorServer_->start();
-    if (port > 0) {
-        mirrorVideoPort_ = port;
-        mirrorVideoRunning_ = true;
-        LOGI("Mirror video server started on port %d", port);
-    } else {
-        mirrorServer_.reset();
-    }
-
-    return port;
-}
-
-void AirPlayServer::stopMirrorVideoServer() {
-    if (!mirrorVideoRunning_) {
-        return;
-    }
-
-    LOGI("Stopping mirror video server");
-    mirrorVideoRunning_ = false;
-    mirrorVideoPort_ = 0;
-    if (mirrorServer_) {
-        mirrorServer_->stop();
-        mirrorServer_.reset();
-    }
-}
-
-// This method is now handled by MirrorServer module
-void AirPlayServer::mirrorVideoThread() { /* Handled by MirrorServer */ }
 
 // ============================================================================
 // FairPlay Decryption - Delegate to FairPlayHandler
@@ -571,4 +337,23 @@ bool AirPlayServer::decryptFairPlayAesKey(const uint8_t* encryptedKey, size_t si
         return false;
     }
     return fairplayHandler_->decryptAesKey(encryptedKey, size, outKey);
+}
+
+std::string AirPlayServer::extractHeader(const std::string& request, const std::string& header) {
+    return rtspHandler_ ? rtspHandler_->extractHeader(request, header) : "";
+}
+
+std::string AirPlayServer::extractBody(const std::string& request) {
+    return rtspHandler_ ? rtspHandler_->extractBody(request) : "";
+}
+
+void AirPlayServer::notifyActivity(const std::string& method) {
+    if (!sessionAnnounced_ || !onActivity_) {
+        return;
+    }
+    onActivity_(method);
+}
+
+bool AirPlayServer::handleMediaRequest(int socket, const std::string& request) {
+    return routeDispatcher_->dispatchMediaRequest(socket, request, rtspHandler_.get());
 }

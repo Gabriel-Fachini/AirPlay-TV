@@ -13,13 +13,19 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_library(
     airplay-native
     SHARED
-    native-lib.cpp
-    airplay_server.cpp
-    airplay_media_routes.cpp
+    jni/native-lib.cpp
+    jni/JniBridge.cpp
+    core/AirPlayServer.cpp
+    core/SessionManager.cpp
+    core/MediaOrchestrator.cpp
     # Protocol modules
     protocol/protocol_constants.cpp
     protocol/fairplay_handler.cpp
     protocol/rtsp_handler.cpp
+    protocol/routes/RouteDispatcher.cpp
+    protocol/routes/ServerInfoHandler.cpp
+    protocol/routes/PhotoRouteHandler.cpp
+    protocol/routes/VideoRouteHandler.cpp
     # Network modules
     network/network_utils.cpp
     network/rtp_receiver.cpp
