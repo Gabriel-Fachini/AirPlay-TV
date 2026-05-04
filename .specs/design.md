@@ -297,84 +297,16 @@ Servidor → Cliente: 200 OK
 
 ### 3. Pipeline de vídeo (VideoDecoder)
 
-**Configuração do MediaCodec**:
-```kotlin
-val codec = MediaCodec.createDecoderByType("video/avc") // H.264
-val format = MediaFormat.createVideoFormat("video/avc", width, height).apply {
-    setByteBuffer("csd-0", spsBuffer) // Sequence Parameter Set
-    setByteBuffer("csd-1", ppsBuffer) // Picture Parameter Set
-    setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 1024 * 1024) // 1MB
-}
-codec.configure(format, surface, null, 0)
-codec.start()
-```
-
-**Loop de decodificação**:
-```kotlin
-// Thread dedicada para decodificação
-while (isActive) {
-    // Enfileira buffer de entrada
-    val inputIndex = codec.dequeueInputBuffer(TIMEOUT_US)
-    if (inputIndex >= 0) {
-        val buffer = codec.getInputBuffer(inputIndex)
-        buffer.put(h264Data) // dados do ProtocolHandler
-        codec.queueInputBuffer(inputIndex, 0, h264Data.size, timestampUs, 0)
-    }
-    
-    // Desenfileira buffer de saída
-    val outputIndex = codec.dequeueOutputBuffer(bufferInfo, TIMEOUT_US)
-    if (outputIndex >= 0) {
-        codec.releaseOutputBuffer(outputIndex, true) // renderiza no Surface
-        // Atualiza métricas (FPS, latência)
-    }
-}
-```
-
-**Renderização**:
-- SurfaceView em tela cheia na MainActivity
-- Surface passado para MediaCodec.configure()
-- Renderização automática ao chamar releaseOutputBuffer(index, true)
+- Configura MediaCodec para H.264 com SPS/PPS do codec config (type 0x01 packet)
+- Thread dedicada para decode loop (dequeueInputBuffer → queueInputBuffer → dequeueOutputBuffer → releaseOutputBuffer)
+- SurfaceView em tela cheia, Surface passado para MediaCodec.configure()
+- See implementation: `media/VideoDecoder.kt`
 
 ### 4. Pipeline de áudio (AudioDecoder)
 
-**Configuração do MediaCodec**:
-```kotlin
-val codec = MediaCodec.createDecoderByType("audio/mp4a-latm") // AAC
-val format = MediaFormat.createAudioFormat("audio/mp4a-latm", sampleRate, channels).apply {
-    setByteBuffer("csd-0", aacConfigBuffer) // AudioSpecificConfig
-}
-codec.configure(format, null, null, 0)
-codec.start()
-```
-
-**Configuração do AudioTrack**:
-```kotlin
-val bufferSize = AudioTrack.getMinBufferSize(
-    sampleRate,
-    AudioFormat.CHANNEL_OUT_STEREO,
-    AudioFormat.ENCODING_PCM_16BIT
-)
-val audioTrack = AudioTrack(
-    AudioAttributes.Builder()
-        .setUsage(AudioAttributes.USAGE_MEDIA)
-        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-        .build(),
-    AudioFormat.Builder()
-        .setSampleRate(sampleRate)
-        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-        .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
-        .build(),
-    bufferSize,
-    AudioTrack.MODE_STREAM,
-    AudioManager.AUDIO_SESSION_ID_GENERATE
-)
-audioTrack.play()
-```
-
-**Sincronização A/V**:
-- Usar timestamps RTP para calcular PTS (Presentation Timestamp)
-- Ajustar playback do AudioTrack para compensar drift
-- Tolerância de dessincronização: 100ms
+- MediaCodec for AAC-LC, AudioTrack MODE_STREAM for playback
+- A/V sync via RTP timestamps with 100ms tolerance
+- See implementation: `media/AudioDecoder.kt`, `media/SyncManager.kt`
 
 ### 5. Gestão de estado (UIStateManager)
 
@@ -398,37 +330,8 @@ val allowedTransitions = mapOf(
 
 ### 6. Logging e telemetria
 
-**Estrutura de logs**:
-```kotlin
-// Tags por componente
-const val TAG_MDNS = "AirPlay:mDNS"
-const val TAG_PROTOCOL = "AirPlay:Protocol"
-const val TAG_VIDEO = "AirPlay:Video"
-const val TAG_AUDIO = "AirPlay:Audio"
-const val TAG_SESSION = "AirPlay:Session"
-
-// Níveis
-Log.d(TAG_MDNS, "Service registered: $serviceName")
-Log.i(TAG_SESSION, "Connection established from $clientIp")
-Log.w(TAG_VIDEO, "Frame dropped: buffer full")
-Log.e(TAG_PROTOCOL, "Handshake failed: $error")
-```
-
-**Telemetria na tela (opcional)**:
-```kotlin
-data class Telemetry(
-    val fps: Int,
-    val latencyMs: Int,
-    val bitrateMbps: Float,
-    val resolution: String,
-    val droppedFrames: Int
-)
-
-// Overlay transparente no canto da tela
-if (debugMode) {
-    Text("FPS: ${telemetry.fps} | Latency: ${telemetry.latencyMs}ms")
-}
-```
+- Tags: `TAG_MDNS`, `TAG_PROTOCOL`, `TAG_VIDEO`, `TAG_AUDIO`, `TAG_SESSION`
+- See implementation: `util/Logger.kt`, `service/TelemetryCollector.kt`
 
 ## Considerações de performance
 
@@ -532,78 +435,10 @@ airplay-tv-mvp/
 └── README.md
 ```
 
-## Dependências do projeto (build.gradle.kts)
+## Build Configuration
 
-```kotlin
-dependencies {
-    // Android core
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.appcompat:appcompat:1.6.1")
-    implementation("androidx.leanback:leanback:1.0.0") // Android TV
-    
-    // Lifecycle e ViewModel
-    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.7.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
-    
-    // Coroutines
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
-    
-    // Logging (opcional)
-    implementation("com.jakewharton.timber:timber:5.0.1")
-    
-    // Testing
-    testImplementation("junit:junit:4.13.2")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
-}
-```
+See actual configuration in `AirPlayTV/app/build.gradle.kts` and `AirPlayTV/app/src/main/cpp/CMakeLists.txt`.
 
-## Configuração do NDK (build.gradle.kts)
-
-```kotlin
-android {
-    // ...
-    
-    defaultConfig {
-        // ...
-        ndk {
-            abiFilters += listOf("armeabi-v7a", "arm64-v8a") // arquiteturas da TV
-        }
-        
-        externalNativeBuild {
-            cmake {
-                cppFlags += "-std=c++17"
-                arguments += "-DANDROID_STL=c++_shared"
-            }
-        }
-    }
-    
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
-    }
-}
-```
-
-## Próximos passos de implementação
-
-1. **Fase de pesquisa** (antes de codificar):
-   - Avaliar bibliotecas open source (RPiPlay vs UxPlay vs outras)
-   - Validar compilação da biblioteca escolhida para Android via NDK
-   - Testar exemplo mínimo de mDNS com NsdManager
-
-2. **Prototipagem**:
-   - Criar projeto Android TV básico
-   - Implementar anúncio mDNS e validar descoberta no Mac
-   - Integrar biblioteca AirPlay e testar handshake
-
-3. **Implementação incremental**:
-   - Seguir ordem das fases definidas em tasks.md
-   - Testar cada componente isoladamente antes de integrar
-   - Validar no hardware real a cada milestone
-
-4. **Otimização**:
-   - Medir performance no hardware alvo
-   - Ajustar buffering e resolução conforme necessário
-   - Iterar baseado em feedback de uso real
+- NDK ABIs: `armeabi-v7a`, `arm64-v8a`
+- C++ standard: C++17
+- CMake version: 3.22.1

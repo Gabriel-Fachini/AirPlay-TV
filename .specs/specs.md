@@ -100,14 +100,6 @@ Construir um receptor minimalista de AirPlay mirroring para Android TV, com foco
   - Início/fim de sessão
   - Erros de decodificação ou rede
 
-## Requisitos de compatibilidade
-
-- plataforma alvo principal: Android TV da Sony, 55 polegadas, com aproximadamente 7 anos de uso
-- modelo exato da TV ainda não foi informado e deve ser confirmado depois
-- o computador principal de desenvolvimento e testes será este Mac
-- os dispositivos Apple usados no projeto já estão nas versões mais novas disponíveis ao autor, incluindo `iOS 26` e `macOS Tahoe`
-- o alvo de compatibilidade do MVP é fazer os dispositivos pessoais do autor funcionarem entre si, sem promessa ampla de suporte universal
-
 ## Requisitos não funcionais
 
 ### RNF01 - Performance
@@ -226,17 +218,6 @@ O MVP será considerado completo quando:
 8. ✅ Sessão pode ser encerrada manualmente via controle remoto
 9. ✅ Após desconexão, app retorna automaticamente ao estado "Ocioso"
 10. ✅ App é estável durante apresentações e visualização de fotos (sem crashes)
-
-### Cenários de teste obrigatórios
-
-1. **Teste de descoberta**: Abrir app na TV e verificar se aparece no Mac/iPhone/iPad
-2. **Teste de conexão**: Conectar do Mac e verificar estabelecimento de sessão
-3. **Teste de apresentação**: Espelhar apresentação de slides por 10 minutos sem falhas
-4. **Teste de fotos**: Navegar por álbum de fotos na TV via mirroring
-5. **Teste de desconexão**: Desligar AirPlay no Mac e verificar retorno ao estado "Ocioso"
-6. **Teste de reconexão**: Conectar novamente após desconexão e verificar funcionamento
-7. **Teste de latência**: Medir latência percebida (ex: mover mouse e observar delay na TV)
-8. **Teste de erro**: Desconectar Wi-Fi durante sessão e verificar tratamento de erro
 
 ### Métricas de sucesso
 
