@@ -1,11 +1,6 @@
 package com.airplay.tv.ui
 
 import android.app.Application
-import android.content.ComponentName
-import android.content.Context
-import android.content.Intent
-import android.content.ServiceConnection
-import android.os.IBinder
 import android.view.Surface
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -17,7 +12,9 @@ import com.airplay.tv.service.SessionManager
 import com.airplay.tv.util.Constants
 import com.airplay.tv.util.Logger
 import com.airplay.tv.util.TelemetryCollector
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 /**
@@ -33,30 +30,8 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
     val telemetry: StateFlow<TelemetryCollector.Telemetry> = telemetryCollector.telemetry
     val mdnsState: StateFlow<mDNSModule.ServiceState> = mdnsModule.serviceState
     
-    // Service binding
-    private var airPlayService: AirPlayService? = null
-    private var serviceBound = false
-    private var pendingVideoSurface: Surface? = null
-    
-    private val serviceConnection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            val binder = service as AirPlayService.LocalBinder
-            airPlayService = binder.getService()
-            serviceBound = true
-
-            pendingVideoSurface?.let { surface ->
-                airPlayService?.setVideoSurface(surface)
-            }
-            
-            // Observar estados do serviço
-            observeServiceStates()
-        }
-
-        override fun onServiceDisconnected(name: ComponentName?) {
-            airPlayService = null
-            serviceBound = false
-        }
-    }
+    private val serviceConnectionManager = ServiceConnectionManager(application)
+    private val mediaStateTracker = MediaStateTracker(uiStateManager, telemetryCollector)
 
     init {
         // Inicializar com estado Startup
@@ -88,50 +63,59 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
         }
+        
+        // Observar mudanças no serviço
+        viewModelScope.launch {
+            serviceConnectionManager.serviceFlow.collectLatest { service ->
+                if (service != null) {
+                    observeServiceStates(service)
+                }
+            }
+        }
     }
     
     /**
      * Observa estados do serviço AirPlay
      */
-    private fun observeServiceStates() {
-        val service = airPlayService ?: return
-        
-        // Observar estado da sessão
-        viewModelScope.launch {
-            service.getSessionState().collect { sessionState ->
-                handleSessionStateChange(sessionState)
+    private suspend fun observeServiceStates(service: AirPlayService) {
+        coroutineScope {
+            // Observar estado da sessão
+            launch {
+                service.getSessionState().collect { sessionState ->
+                    handleSessionStateChange(sessionState)
+                }
             }
-        }
-        
-        // Observar estado da conexão
-        viewModelScope.launch {
-            service.getConnectionState().collect { connectionState ->
-                handleConnectionStateChange(connectionState)
+            
+            // Observar estado da conexão
+            launch {
+                service.getConnectionState().collect { connectionState ->
+                    handleConnectionStateChange(connectionState)
+                }
             }
-        }
 
-        viewModelScope.launch {
-            service.getMediaPlaybackState().collect { mediaState ->
-                handleMediaPlaybackStateChange(mediaState)
+            launch {
+                service.getMediaPlaybackState().collect { mediaState ->
+                    mediaStateTracker.handleMediaPlaybackStateChange(mediaState)
+                }
             }
-        }
 
-        viewModelScope.launch {
-            service.getTelemetry().collect { serviceTelemetry ->
-                telemetryCollector.updateFps(serviceTelemetry.fps.toFloat())
-                telemetryCollector.updateLatency(serviceTelemetry.latencyMs)
-                telemetryCollector.updateBitrate(serviceTelemetry.bitrateMbps * 1000f)
-                telemetryCollector.updateFrameStats(
-                    droppedFrames = serviceTelemetry.droppedFrames,
-                    totalFrames = serviceTelemetry.totalFrames
-                )
+            launch {
+                service.getTelemetry().collect { serviceTelemetry ->
+                    telemetryCollector.updateFps(serviceTelemetry.fps.toFloat())
+                    telemetryCollector.updateLatency(serviceTelemetry.latencyMs)
+                    telemetryCollector.updateBitrate(serviceTelemetry.bitrateMbps * 1000f)
+                    telemetryCollector.updateFrameStats(
+                        droppedFrames = serviceTelemetry.droppedFrames,
+                        totalFrames = serviceTelemetry.totalFrames
+                    )
+                }
             }
-        }
 
-        viewModelScope.launch {
-            service.getVideoOutputSize().collect { videoOutputSize ->
-                if (videoOutputSize.width > 0 && videoOutputSize.height > 0) {
-                    telemetryCollector.updateResolution(videoOutputSize.width, videoOutputSize.height)
+            launch {
+                service.getVideoOutputSize().collect { videoOutputSize ->
+                    if (videoOutputSize.width > 0 && videoOutputSize.height > 0) {
+                        telemetryCollector.updateResolution(videoOutputSize.width, videoOutputSize.height)
+                    }
                 }
             }
         }
@@ -199,59 +183,7 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun handleMediaPlaybackStateChange(state: ProtocolHandler.MediaPlaybackState) {
-        when (state) {
-            is ProtocolHandler.MediaPlaybackState.Idle -> {
-                Logger.i(Logger.TAG_UI, "UI media playback state: Idle")
-                if (!uiStateManager.isInState(UIStateManager.UIState.Mirroring::class)) {
-                    uiStateManager.returnToIdle(Constants.DEFAULT_DEVICE_NAME)
-                }
-            }
 
-            is ProtocolHandler.MediaPlaybackState.PhotoDisplayed -> {
-                Logger.i(
-                    Logger.TAG_UI,
-                    "UI entering photo playback: sessionId=${state.sessionId.ifEmpty { "none" }} " +
-                        "asset=${state.assetKey.ifEmpty { "none" }} bytes=${state.imageData.size}"
-                )
-                telemetryCollector.reset()
-                uiStateManager.transitionTo(
-                    UIStateManager.UIState.MediaPlayback(
-                        clientIp = state.clientIp,
-                        kind = "photo",
-                        sessionId = state.sessionId,
-                        imageData = state.imageData.copyOf(),
-                        assetKey = state.assetKey,
-                        transition = state.transition,
-                        theme = null,
-                        slideDurationSeconds = 0
-                    )
-                )
-            }
-
-            is ProtocolHandler.MediaPlaybackState.SlideshowPlaying -> {
-                Logger.i(
-                    Logger.TAG_UI,
-                    "UI entering slideshow playback: sessionId=${state.sessionId.ifEmpty { "none" }} " +
-                        "theme=${state.theme ?: "none"} duration=${state.slideDurationSeconds}s " +
-                        "hasImage=${state.imageData != null}"
-                )
-                telemetryCollector.reset()
-                uiStateManager.transitionTo(
-                    UIStateManager.UIState.MediaPlayback(
-                        clientIp = state.clientIp,
-                        kind = "slideshow",
-                        sessionId = state.sessionId,
-                        imageData = state.imageData?.copyOf(),
-                        assetKey = state.assetKey,
-                        transition = state.transition,
-                        theme = state.theme,
-                        slideDurationSeconds = state.slideDurationSeconds
-                    )
-                )
-            }
-        }
-    }
     
     /**
      * Inicia o serviço AirPlay
@@ -297,10 +229,7 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
                 port = Constants.RTSP_PORT
             )
             
-            // Iniciar AirPlayService
-            val intent = Intent(getApplication(), AirPlayService::class.java)
-            getApplication<Application>().startService(intent)
-            getApplication<Application>().bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+            serviceConnectionManager.startAndBindService()
             
             Logger.i(Logger.TAG_SERVICE, "AirPlay service started")
         }
@@ -318,14 +247,7 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
             // Desregistrar serviço mDNS
             mdnsModule.unregisterService()
             
-            // Parar AirPlayService
-            if (serviceBound) {
-                getApplication<Application>().unbindService(serviceConnection)
-                serviceBound = false
-            }
-            
-            val intent = Intent(getApplication(), AirPlayService::class.java)
-            getApplication<Application>().stopService(intent)
+            serviceConnectionManager.unbindAndStopService()
             
         }
     }
@@ -337,7 +259,7 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             Logger.i(Logger.TAG_SESSION, "Ending session")
             
-            airPlayService?.endSession()
+            serviceConnectionManager.endSession()
             
             // Retornar ao Idle
             uiStateManager.returnToIdle(Constants.DEFAULT_DEVICE_NAME)
@@ -346,13 +268,11 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setVideoSurface(surface: Surface) {
-        pendingVideoSurface = surface
-        airPlayService?.setVideoSurface(surface)
+        serviceConnectionManager.setVideoSurface(surface)
     }
 
     fun clearVideoSurface() {
-        pendingVideoSurface = null
-        airPlayService?.clearVideoSurface()
+        serviceConnectionManager.clearVideoSurface()
     }
     
     /**

@@ -1,8 +1,6 @@
 package com.airplay.tv.media
 
-import android.media.AudioAttributes
-import android.media.AudioFormat
-import android.media.AudioTrack
+
 import android.media.MediaCodec
 import android.media.MediaFormat
 import com.airplay.tv.util.Constants
@@ -19,17 +17,17 @@ import kotlin.coroutines.coroutineContext
  * Decodificador de áudio AAC usando MediaCodec
  * Reproduz áudio via AudioTrack
  */
-class AudioDecoder {
+class AudioDecoder(
+    private val performanceTracker: AudioPerformanceTracker = AudioPerformanceTracker(),
+    private val inputQueue: AudioInputQueue = AudioInputQueue(),
+    private val trackManager: AudioTrackManager = AudioTrackManager()
+) {
     private val _state = MutableStateFlow<DecoderState>(DecoderState.Idle)
     val state: StateFlow<DecoderState> = _state.asStateFlow()
     
     private var codec: MediaCodec? = null
-    private var audioTrack: AudioTrack? = null
     private var decoderJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-    
-    // Buffer de entrada (fila de payloads AAC)
-    private val inputQueue = LinkedBlockingQueue<AACFrame>(Constants.JITTER_BUFFER_FRAMES * 2)
     
     data class AACFrame(
         val data: ByteArray,
@@ -60,17 +58,8 @@ class AudioDecoder {
         }
     }
     
-    // Métricas
-    private var samplesDecoded = 0L
-    private var samplesDropped = 0L
-    
-    // Configuração de áudio
     private var sampleRate = 44100
     private var channels = 2
-    private var lastRenderedPresentationTimeUs = 0L
-    private var hasSynchronizedClock = false
-    private var inputFramesQueued = 0L
-    private var firstRenderedBufferLogged = false
     
     /**
      * Configura decoder com parâmetros de áudio
@@ -92,10 +81,7 @@ class AudioDecoder {
             
             this.sampleRate = sampleRate
             this.channels = channels
-            lastRenderedPresentationTimeUs = 0L
-            hasSynchronizedClock = false
-            inputFramesQueued = 0L
-            firstRenderedBufferLogged = false
+            performanceTracker.resetMetrics()
             
             // Criar decoder AAC
             codec = MediaCodec.createDecoderByType(Constants.AUDIO_CODEC_MIME)
@@ -113,35 +99,10 @@ class AudioDecoder {
             codec?.configure(format, null, null, 0)
             
             // Criar AudioTrack
-            val channelConfig = if (channels == 1) {
-                AudioFormat.CHANNEL_OUT_MONO
-            } else {
-                AudioFormat.CHANNEL_OUT_STEREO
+            if (!trackManager.configure(sampleRate, channels)) {
+                _state.value = DecoderState.Error("AudioTrack configuration failed")
+                return false
             }
-            
-            val bufferSize = AudioTrack.getMinBufferSize(
-                sampleRate,
-                channelConfig,
-                AudioFormat.ENCODING_PCM_16BIT
-            )
-            
-            audioTrack = AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build()
-                )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setSampleRate(sampleRate)
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setChannelMask(channelConfig)
-                        .build()
-                )
-                .setBufferSizeInBytes(bufferSize * 2) // Buffer maior para estabilidade
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .build()
             
             _state.value = DecoderState.Configured
             Logger.i(Logger.TAG_AUDIO, "Audio decoder configured successfully")
@@ -166,7 +127,7 @@ class AudioDecoder {
         
         try {
             codec?.start()
-            audioTrack?.play()
+            trackManager.play()
             
             _state.value = DecoderState.Running
             
@@ -175,7 +136,7 @@ class AudioDecoder {
                 decoderLoop()
             }
             
-            Logger.i(Logger.TAG_AUDIO, "Start qCap=${inputQueue.remainingCapacity() + inputQueue.size}")
+            Logger.i(Logger.TAG_AUDIO, "Start qCap=${inputQueue.getRemainingCapacity() + inputQueue.getSize()}")
             
         } catch (e: Exception) {
             Logger.e(Logger.TAG_AUDIO, "Failed to start audio decoder", e)
@@ -194,13 +155,7 @@ class AudioDecoder {
         decoderJob = null
         
         try {
-            try {
-                audioTrack?.stop()
-            } catch (e: IllegalStateException) {
-                Logger.w(Logger.TAG_AUDIO, "AudioTrack already stopped or in invalid state", e)
-            }
-            audioTrack?.release()
-            audioTrack = null
+            trackManager.stopAndRelease()
             
             try {
                 codec?.stop()
@@ -214,12 +169,9 @@ class AudioDecoder {
         }
 
         inputQueue.clear()
-        lastRenderedPresentationTimeUs = 0L
-        hasSynchronizedClock = false
-        inputFramesQueued = 0L
-        firstRenderedBufferLogged = false
+        performanceTracker.resetMetrics()
 
-        Logger.i(Logger.TAG_AUDIO, "Audio decoder stopped (decoded=$samplesDecoded, dropped=$samplesDropped)")
+        Logger.i(Logger.TAG_AUDIO, "Audio decoder stopped (decoded=${performanceTracker.samplesDecoded}, dropped=${performanceTracker.samplesDropped})")
     }
     
     /**
@@ -233,18 +185,9 @@ class AudioDecoder {
             return
         }
         
-        val frame = AACFrame(data, rtpTimestamp, presentationTimeUs, clockLocked)
-        inputFramesQueued++
-        if (inputFramesQueued <= 3L) {
-            Logger.i(
-                Logger.TAG_AUDIO,
-                "In#$inputFramesQueued size=${data.size} ts=$rtpTimestamp pts=$presentationTimeUs lock=$clockLocked"
-            )
-        }
-
-        if (!inputQueue.offer(frame)) {
-            samplesDropped++
-            Logger.w(Logger.TAG_AUDIO, "Input queue full, dropping frame (dropped=$samplesDropped)")
+        performanceTracker.onFrameQueued(data.size, rtpTimestamp, presentationTimeUs, clockLocked)
+        inputQueue.queueFrame(data, rtpTimestamp, presentationTimeUs, clockLocked) {
+            performanceTracker.onFrameDropped()
         }
     }
     
@@ -316,12 +259,9 @@ class AudioDecoder {
                 frame.presentationTimeUs,
                 0
             )
-            if (!hasSynchronizedClock && frame.clockLocked) {
-                Logger.i(Logger.TAG_AUDIO, "Clock lock pts=${frame.presentationTimeUs}")
-            }
-            hasSynchronizedClock = hasSynchronizedClock || frame.clockLocked
+            performanceTracker.onFrameSubmittedToCodec(frame.presentationTimeUs, frame.clockLocked)
         } else {
-            samplesDropped++
+            performanceTracker.onFrameDropped()
         }
     }
     
@@ -330,7 +270,6 @@ class AudioDecoder {
      */
     private fun processOutput(timeoutUs: Long) {
         val codec = this.codec ?: return
-        val audioTrack = this.audioTrack ?: return
         
         val bufferInfo = MediaCodec.BufferInfo()
         val outputIndex = codec.dequeueOutputBuffer(bufferInfo, timeoutUs)
@@ -347,20 +286,12 @@ class AudioDecoder {
                     outputBuffer.clear()
                     
                     // Reproduzir via AudioTrack
-                    val written = audioTrack.write(audioData, 0, audioData.size)
+                    val written = trackManager.write(audioData, 0, audioData.size)
                     
                     if (written < 0) {
                         Logger.e(Logger.TAG_AUDIO, "AudioTrack write error: $written")
                     } else {
-                        samplesDecoded += (written / 2).toLong() // 16-bit samples
-                        lastRenderedPresentationTimeUs = bufferInfo.presentationTimeUs
-                        if (!firstRenderedBufferLogged) {
-                            firstRenderedBufferLogged = true
-                            Logger.i(
-                                Logger.TAG_AUDIO,
-                                "First PCM bytes=$written pts=${bufferInfo.presentationTimeUs} dec=$samplesDecoded"
-                            )
-                        }
+                        performanceTracker.onSamplesDecoded(written, bufferInfo.presentationTimeUs)
                     }
                 }
                 
@@ -384,47 +315,35 @@ class AudioDecoder {
      * @param rate Taxa de playback (1.0 = normal, >1.0 = mais rápido, <1.0 = mais lento)
      */
     fun setPlaybackRate(rate: Float) {
-        try {
-            val track = audioTrack ?: return
-            val params = track.playbackParams
-            track.playbackParams = params.setSpeed(rate)
-            Logger.d(Logger.TAG_AUDIO, "Playback rate adjusted to $rate")
-        } catch (e: Exception) {
-            Logger.e(Logger.TAG_AUDIO, "Failed to set playback rate", e)
-        }
+        trackManager.setPlaybackRate(rate)
     }
     
     /**
      * Obtém timestamp de reprodução atual (microsegundos)
      */
     fun getCurrentTimestampUs(): Long {
-        return lastRenderedPresentationTimeUs
+        return performanceTracker.lastRenderedPresentationTimeUs
     }
 
-    fun getLastRenderedPresentationTimeUs(): Long = lastRenderedPresentationTimeUs
+    fun getLastRenderedPresentationTimeUs(): Long = performanceTracker.lastRenderedPresentationTimeUs
 
-    fun hasSynchronizedClock(): Boolean = hasSynchronizedClock
+    fun hasSynchronizedClock(): Boolean = performanceTracker.hasSynchronizedClock
     
     /**
      * Obtém número de samples decodificados
      */
-    fun getSamplesDecoded(): Long = samplesDecoded
+    fun getSamplesDecoded(): Long = performanceTracker.samplesDecoded
     
     /**
      * Obtém número de samples dropados
      */
-    fun getSamplesDropped(): Long = samplesDropped
+    fun getSamplesDropped(): Long = performanceTracker.samplesDropped
     
     /**
      * Reseta métricas
      */
     fun resetMetrics() {
-        samplesDecoded = 0
-        samplesDropped = 0
-        lastRenderedPresentationTimeUs = 0L
-        hasSynchronizedClock = false
-        inputFramesQueued = 0L
-        firstRenderedBufferLogged = false
+        performanceTracker.resetMetrics()
     }
 
     private fun ByteBuffer.toCompactHex(): String {

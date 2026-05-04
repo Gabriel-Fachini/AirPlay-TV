@@ -20,8 +20,15 @@ import kotlin.coroutines.coroutineContext
  */
 class VideoDecoder(
     private val telemetryCollector: TelemetryCollector,
+    private val performanceTracker: VideoPerformanceTracker,
+    private val inputQueue: VideoInputQueue,
     private val onVideoSizeChanged: (width: Int, height: Int) -> Unit = { _, _ -> }
 ) {
+    init {
+        performanceTracker.onAdjustBufferSize = { increase ->
+            inputQueue.adjustBufferSize(increase)
+        }
+    }
     
     private val _state = MutableStateFlow<DecoderState>(DecoderState.Idle)
     val state: StateFlow<DecoderState> = _state.asStateFlow()
@@ -30,9 +37,7 @@ class VideoDecoder(
     private var decoderJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     
-    // Buffer de entrada (fila de payloads H.264) - tamanho dinâmico
-    private var bufferSize = Constants.JITTER_BUFFER_FRAMES * 6
-    private var inputQueue = LinkedBlockingQueue<H264Frame>(bufferSize)
+
     
     data class H264Frame(
         val data: ByteArray,
@@ -60,23 +65,7 @@ class VideoDecoder(
         }
     }
     
-    // Métricas
-    private var framesDecoded = 0L
-    private var framesDropped = 0L
-    private var lastFpsTime = System.currentTimeMillis()
-    private var fpsCounter = 0
-    private var currentFps = 0
-    private var submittedInputFrames = 0L
-    private var sessionStartTimeUs = 0L  // Tempo de início da sessão (para cálculo de latência)
-    private var bytesSubmittedSinceLastBitrateSample = 0L
-    private var lastBitrateSampleTimeMs = System.currentTimeMillis()
-    private var lastRenderedPresentationTimeUs = 0L
-    
-    // Monitoramento de performance
-    private var lowFpsCounter = 0
-    private var highDropRateCounter = 0
-    private val performanceCheckInterval = 1000L // 1 segundo
-    private var lastPerformanceCheck = System.currentTimeMillis()
+
     
     /**
      * Configura decoder com parâmetros de vídeo
@@ -163,10 +152,7 @@ class VideoDecoder(
             _state.value = DecoderState.Running
             
             // Resetar métricas
-            resetMetrics()
-            
-            // Inicializar tempo de início da sessão (em microsegundos)
-            sessionStartTimeUs = System.currentTimeMillis() * 1000L
+            performanceTracker.onSessionStarted()
             
             // Iniciar thread de decodificação com prioridade alta
             decoderJob = scope.launch {
@@ -218,10 +204,10 @@ class VideoDecoder(
         
         // Limpar fila de entrada
         inputQueue.clear()
-        lastRenderedPresentationTimeUs = 0L
+        performanceTracker.onSessionStopped()
         _state.value = DecoderState.Idle
         
-        Logger.i(Logger.TAG_VIDEO, "Video decoder stopped (decoded=$framesDecoded, dropped=$framesDropped, fps=$currentFps)")
+        Logger.i(Logger.TAG_VIDEO, "Video decoder stopped (decoded=${performanceTracker.framesDecoded}, dropped=${performanceTracker.framesDropped}, fps=${performanceTracker.currentFps})")
     }
     
     /**
@@ -244,52 +230,16 @@ class VideoDecoder(
         
         // Validar frame antes de enfileirar
         if (!isValidAnnexBFrame(data)) {
-            framesDropped++
+            performanceTracker.onFramesDropped(1)
+            val framesDropped = performanceTracker.framesDropped
             if (framesDropped % 10 == 0L) {
                 Logger.w(Logger.TAG_VIDEO, "Dropping invalid H.264 frame (total dropped=$framesDropped)")
             }
             return
         }
         
-        val frame = H264Frame(data, timestamp, isKeyFrame)
-        
-        if (inputQueue.offer(frame)) {
-            return
-        }
-
-        if (isKeyFrame) {
-            val evictedFrames = inputQueue.size
-            inputQueue.clear()
-            framesDropped += evictedFrames.toLong()
-            if (evictedFrames > 0) {
-                Logger.i(
-                    Logger.TAG_VIDEO,
-                    "Dropped $evictedFrames stale queued frames to preserve latest keyframe"
-                )
-            }
-            if (inputQueue.offer(frame)) {
-                return
-            }
-        } else {
-            val evictedFrame = if (submittedInputFrames == 0L && dropOldestQueuedNonKeyFrame()) {
-                true
-            } else {
-                inputQueue.poll()
-                true
-            }
-            if (evictedFrame) {
-                framesDropped++
-            }
-            if (inputQueue.offer(frame)) {
-                return
-            }
-        }
-
-        framesDropped++
-
-        // Log apenas a cada 10 frames dropados para não poluir logs
-        if (framesDropped % 10 == 0L) {
-            Logger.w(Logger.TAG_VIDEO, "Input queue full, dropping frames (total dropped=$framesDropped)")
+        inputQueue.queueFrame(data, timestamp, isKeyFrame, performanceTracker.submittedInputFrames) { count ->
+            performanceTracker.onFramesDropped(count)
         }
     }
     
@@ -346,14 +296,16 @@ class VideoDecoder(
         }
 
         // Obter próximo frame da fila. Antes do primeiro submit, o decoder precisa começar em um IDR.
-        val frame = pollFrameForCodec() ?: return
+        val frame = inputQueue.pollFrameForCodec(performanceTracker.submittedInputFrames) { count ->
+            performanceTracker.onFramesDropped(count)
+        } ?: return
         
         // Copiar dados para buffer
         val inputBuffer = codec.getInputBuffer(inputIndex)
         if (inputBuffer != null) {
             inputBuffer.clear()
             if (inputBuffer.remaining() < frame.data.size) {
-                framesDropped++
+                performanceTracker.onFramesDropped(1)
                 Logger.w(
                     Logger.TAG_VIDEO,
                     "Codec input buffer too small (${inputBuffer.remaining()}B) for frame ${frame.data.size}B"
@@ -373,42 +325,13 @@ class VideoDecoder(
                 timestampUs,
                 if (frame.isKeyFrame) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
             )
-            submittedInputFrames++
-            bytesSubmittedSinceLastBitrateSample += frame.data.size.toLong()
-            updateBitrateIfNeeded()
-            if (submittedInputFrames <= 3L) {
-                Logger.i(
-                    Logger.TAG_VIDEO,
-                    "Queued codec input #$submittedInputFrames (${frame.data.size} bytes, keyFrame=${frame.isKeyFrame})"
-                )
-            }
+            performanceTracker.onFrameSubmittedToCodec(frame.data.size, frame.isKeyFrame)
         } else {
-            framesDropped++
+            performanceTracker.onFramesDropped(1)
         }
     }
 
-    private fun pollFrameForCodec(): H264Frame? {
-        var frame = inputQueue.poll() ?: return null
 
-        while (submittedInputFrames == 0L && !frame.isKeyFrame) {
-            framesDropped++
-            if (framesDropped % 10 == 0L) {
-                Logger.w(Logger.TAG_VIDEO, "Dropping pre-start non-keyframe while waiting for an IDR (total dropped=$framesDropped)")
-            }
-            frame = inputQueue.poll() ?: return null
-        }
-
-        return frame
-    }
-
-    private fun dropOldestQueuedNonKeyFrame(): Boolean {
-        for (queuedFrame in inputQueue) {
-            if (!queuedFrame.isKeyFrame) {
-                return inputQueue.remove(queuedFrame)
-            }
-        }
-        return false
-    }
     
     /**
      * Processa saída (renderiza frames decodificados)
@@ -425,26 +348,7 @@ class VideoDecoder(
                 
                 // Renderizar no Surface (true = render)
                 codec.releaseOutputBuffer(outputIndex, true)
-                
-                framesDecoded++
-                updateFps()
-                
-                // Calcular latência corretamente:
-                // presentationTimeUs é relativo ao início da sessão
-                // Precisamos comparar com o tempo atual também relativo ao início da sessão
-                val currentTimeUs = System.currentTimeMillis() * 1000L
-                val elapsedSinceSessionStartUs = currentTimeUs - sessionStartTimeUs
-                val latencyUs = elapsedSinceSessionStartUs - bufferInfo.presentationTimeUs
-                val latencyMs = latencyUs / 1000
-                lastRenderedPresentationTimeUs = bufferInfo.presentationTimeUs
-                
-                // Atualizar telemetria
-                telemetryCollector.updateVideoMetrics(
-                    fps = currentFps,
-                    latencyMs = latencyMs.toInt(),
-                    droppedFrames = framesDropped.toInt(),
-                    totalFrames = (framesDecoded + framesDropped).toInt()
-                )
+                performanceTracker.onFrameDecoded(bufferInfo.presentationTimeUs)
             }
             
             outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
@@ -461,148 +365,26 @@ class VideoDecoder(
         }
     }
     
-    /**
-     * Atualiza contador de FPS
-     */
-    private fun updateFps() {
-        fpsCounter++
-        
-        val now = System.currentTimeMillis()
-        val elapsed = now - lastFpsTime
-        
-        if (elapsed >= 1000) { // Atualizar a cada segundo
-            currentFps = (fpsCounter * 1000 / elapsed).toInt()
-            fpsCounter = 0
-            lastFpsTime = now
-            
-            // Verificar performance periodicamente
-            checkPerformance()
-        }
-    }
-
-    private fun updateBitrateIfNeeded() {
-        val now = System.currentTimeMillis()
-        val elapsedMs = now - lastBitrateSampleTimeMs
-        if (elapsedMs < 1000) {
-            return
-        }
-
-        val bitrateMbps = if (elapsedMs > 0) {
-            (bytesSubmittedSinceLastBitrateSample * 8f) / (elapsedMs / 1000f) / 1_000_000f
-        } else {
-            0f
-        }
-
-        telemetryCollector.updateBitrate(bitrateMbps)
-        bytesSubmittedSinceLastBitrateSample = 0L
-        lastBitrateSampleTimeMs = now
-    }
-
-    fun getLastRenderedPresentationTimeUs(): Long = lastRenderedPresentationTimeUs
-    
-    /**
-     * Verifica performance e ajusta buffer dinamicamente
-     */
-    private fun checkPerformance() {
-        val now = System.currentTimeMillis()
-        if (now - lastPerformanceCheck < performanceCheckInterval) {
-            return
-        }
-        lastPerformanceCheck = now
-        
-        // Calcular taxa de drop
-        val totalFrames = framesDecoded + framesDropped
-        val dropRate = if (totalFrames > 0) {
-            (framesDropped.toFloat() / totalFrames.toFloat()) * 100f
-        } else {
-            0f
-        }
-        
-        // Detectar FPS baixo (< 20 por 3 segundos consecutivos)
-        if (currentFps < 20 && currentFps > 0) {
-            lowFpsCounter++
-            if (lowFpsCounter >= 3) {
-                Logger.w(Logger.TAG_VIDEO, "Low FPS detected: $currentFps (threshold: 20)")
-                // TODO: Implementar fallback de resolução (1080p → 720p)
-                // Requer renegociação RTSP, será implementado na segunda metade da Fase 6
-                lowFpsCounter = 0
-            }
-        } else {
-            lowFpsCounter = 0
-        }
-        
-        // Detectar alta taxa de drop (> 5% por 3 segundos consecutivos)
-        if (dropRate > 5f) {
-            highDropRateCounter++
-            if (highDropRateCounter >= 3) {
-                Logger.w(Logger.TAG_VIDEO, "High drop rate detected: ${dropRate.toInt()}% (threshold: 5%)")
-                adjustBufferSize(increase = true)
-                highDropRateCounter = 0
-            }
-        } else {
-            highDropRateCounter = 0
-        }
-        
-        // Se latência muito alta e drop rate baixo, reduzir buffer
-        val latency = telemetryCollector.telemetry.value.latencyMs
-        if (latency > 1000 && dropRate < 1f) {
-            Logger.i(Logger.TAG_VIDEO, "High latency detected: ${latency}ms, reducing buffer")
-            adjustBufferSize(increase = false)
-        }
-    }
-    
-    /**
-     * Ajusta tamanho do buffer dinamicamente
-     */
-    private fun adjustBufferSize(increase: Boolean) {
-        val oldSize = bufferSize
-        
-        if (increase) {
-            // Aumentar buffer (máximo: 14 frames)
-            bufferSize = minOf(bufferSize + 2, 14)
-        } else {
-            // Reduzir buffer (mínimo: 6 frames)
-            bufferSize = maxOf(bufferSize - 2, 6)
-        }
-        
-        if (bufferSize != oldSize) {
-            Logger.i(Logger.TAG_VIDEO, "Buffer size adjusted: $oldSize → $bufferSize frames")
-            
-            // Recriar fila com novo tamanho (preservar frames existentes)
-            val oldQueue = inputQueue
-            inputQueue = LinkedBlockingQueue(bufferSize)
-            oldQueue.drainTo(inputQueue)
-        }
-    }
-    
-    /**
-     * Obtém FPS atual
-     */
-    fun getCurrentFps(): Int = currentFps
+    fun getCurrentFps(): Int = performanceTracker.currentFps
     
     /**
      * Obtém número de frames decodificados
      */
-    fun getFramesDecoded(): Long = framesDecoded
+    fun getFramesDecoded(): Long = performanceTracker.framesDecoded
     
     /**
      * Obtém número de frames dropados
      */
-    fun getFramesDropped(): Long = framesDropped
+    fun getFramesDropped(): Long = performanceTracker.framesDropped
     
     /**
      * Reseta métricas
      */
     fun resetMetrics() {
-        framesDecoded = 0
-        framesDropped = 0
-        fpsCounter = 0
-        currentFps = 0
-        submittedInputFrames = 0
-        bytesSubmittedSinceLastBitrateSample = 0L
-        lastFpsTime = System.currentTimeMillis()
-        lastBitrateSampleTimeMs = lastFpsTime
+        performanceTracker.resetMetrics()
     }
+
+    fun getLastRenderedPresentationTimeUs(): Long = performanceTracker.lastRenderedPresentationTimeUs
 
     private fun extractDisplaySize(format: MediaFormat): Pair<Int, Int>? {
         return try {

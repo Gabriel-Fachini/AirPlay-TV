@@ -20,7 +20,7 @@ import java.nio.ByteBuffer
 class ProtocolHandler(
     private val videoDecoder: VideoDecoder? = null,
     private val audioDecoder: AudioDecoder? = null
-) {
+) : AirPlayJniBridge.JniCallback {
     enum class SessionKind {
         MIRRORING,
         PHOTO,
@@ -33,8 +33,8 @@ class ProtocolHandler(
     private val mirroringSession = AirPlayMirroringSession(
         videoDecoder = videoDecoder,
         pairingManager = pairingManager,
-        decryptFairPlayAesKey = { encryptedKey -> decryptFairPlayAesKeyNative(encryptedKey) },
-        startMirrorVideoServer = { startMirrorVideoServerNative() },
+        decryptFairPlayAesKey = { encryptedKey -> jniBridge.decryptFairPlayAesKeyNative(encryptedKey) },
+        startMirrorVideoServer = { jniBridge.startMirrorVideoServerNative() },
         onCodecConfigReceived = { sps: ByteBuffer, pps: ByteBuffer, width: Int, height: Int ->
             // Emit codec config event
             _codecConfigReceived.tryEmit(CodecConfig(sps, pps, width, height))
@@ -44,7 +44,7 @@ class ProtocolHandler(
         },
         onAudioStreamConfigured = { config ->
             audioPipeline.configureStream(config)
-            updateAudioSessionConfigNative(
+            jniBridge.updateAudioSessionConfigNative(
                 config.compressionType,
                 config.samplesPerFrame,
                 config.audioFormat,
@@ -100,6 +100,9 @@ class ProtocolHandler(
     )
     val sessionActivity: SharedFlow<String> = _sessionActivity.asSharedFlow()
     
+    private val jniBridge = AirPlayJniBridge().apply { callback = this@ProtocolHandler }
+    private val mediaDispatcher = MediaPlaybackDispatcher(playbackStateStore, _mediaPlaybackState, _sessionActivity)
+    
     // Controle de throttling para sessionActivity
     private var lastActivityTime = 0L
     private val activityThrottleMs = 1000L // Emitir no máximo 1x por segundo
@@ -143,30 +146,7 @@ class ProtocolHandler(
         }
     }
     
-    // JNI functions
-    external fun getVersionFromJNI(): String
-    private external fun startRTSPServerNative(port: Int): Boolean
-    private external fun stopRTSPServerNative()
-    private external fun isServerRunningNative(): Boolean
-    private external fun decryptFairPlayAesKeyNative(encryptedKey: ByteArray): ByteArray?
-    private external fun startMirrorVideoServerNative(): Int
-    private external fun getClientIpNative(): String
-    private external fun getVideoResolutionNative(): IntArray
-    private external fun getAudioConfigNative(): IntArray
-    private external fun updateAudioSessionConfigNative(
-        compressionType: Int,
-        samplesPerFrame: Int,
-        audioFormat: Long,
-        sampleRate: Int,
-        channels: Int,
-        remoteControlPort: Int,
-        localDataPort: Int,
-        localControlPort: Int,
-        localTimingPort: Int,
-        isMedia: Boolean,
-        usingScreen: Boolean,
-    )
-    private external fun resetAudioSessionConfigNative()
+
     
     /**
      * Inicia servidor RTSP
@@ -179,7 +159,7 @@ class ProtocolHandler(
             return false
         }
         
-        val success = startRTSPServerNative(port)
+        val success = jniBridge.startRTSPServerNative(port)
         
         if (success) {
             Logger.i(Logger.TAG_PROTOCOL, "RTSP server started successfully")
@@ -187,7 +167,7 @@ class ProtocolHandler(
             rtpParser.resetStats()
             audioPipeline.reset()
             playbackStateStore.reset()
-            resetAudioSessionConfigNative()
+            jniBridge.resetAudioSessionConfigNative()
         } else {
             Logger.e(Logger.TAG_PROTOCOL, "Failed to start RTSP server")
             _connectionState.value = ConnectionState.Error("Failed to start server")
@@ -207,13 +187,13 @@ class ProtocolHandler(
             return
         }
         
-        stopRTSPServerNative()
+        jniBridge.stopRTSPServerNative()
         currentSession = null
         audioPipeline.reset()
         _mediaPlaybackState.value = MediaPlaybackState.Idle
         playbackStateStore.reset()
         _connectionState.value = ConnectionState.Idle
-        resetAudioSessionConfigNative()
+        jniBridge.resetAudioSessionConfigNative()
         
         // Logar estatísticas finais
         rtpParser.logStats()
@@ -225,7 +205,7 @@ class ProtocolHandler(
      * Verifica se servidor está rodando
      */
     fun isServerRunning(): Boolean {
-        return isServerRunningNative()
+        return jniBridge.isServerRunningNative()
     }
     
     /**
@@ -236,13 +216,13 @@ class ProtocolHandler(
             return null
         }
         
-        val clientIp = getClientIpNative()
+        val clientIp = jniBridge.getClientIpNative()
         if (clientIp.isEmpty()) {
             return null
         }
         
-        val videoRes = getVideoResolutionNative()
-        val audioConfig = getAudioConfigNative()
+        val videoRes = jniBridge.getVideoResolutionNative()
+        val audioConfig = jniBridge.getAudioConfigNative()
         val streamConfig = audioPipeline.currentStreamConfig.let { configured ->
             if (configured.compressionType != 0 || configured.samplesPerFrame != 0) {
                 configured
@@ -270,8 +250,7 @@ class ProtocolHandler(
     fun getRTPStats() = Pair(rtpParser.getVideoStats(), rtpParser.getAudioStats())
     
     // Callbacks chamados do código nativo (JNI)
-    @Suppress("unused")
-    private fun onClientConnected(clientIp: String) {
+    override fun onClientConnected(clientIp: String) {
         Logger.i(Logger.TAG_PROTOCOL, "Client connected: $clientIp")
         
         // Atualizar informações da sessão
@@ -287,8 +266,7 @@ class ProtocolHandler(
         }
     }
     
-    @Suppress("unused")
-    private fun onClientDisconnected() {
+    override fun onClientDisconnected() {
         Logger.i(Logger.TAG_PROTOCOL, "Client disconnected")
         currentSession = null
         audioPipeline.reset()
@@ -297,14 +275,13 @@ class ProtocolHandler(
         pairingManager.resetSession()
         mirroringSession.reset()
         _connectionState.value = ConnectionState.Idle
-        resetAudioSessionConfigNative()
+        jniBridge.resetAudioSessionConfigNative()
         
         // Logar estatísticas da sessão
         rtpParser.logStats()
     }
     
-    @Suppress("unused")
-    private fun onError(error: String) {
+    override fun onError(error: String) {
         Logger.e(Logger.TAG_PROTOCOL, "Protocol error: $error")
         audioPipeline.reset()
         _mediaPlaybackState.value = MediaPlaybackState.Idle
@@ -312,46 +289,26 @@ class ProtocolHandler(
         pairingManager.resetSession()
         mirroringSession.reset()
         _connectionState.value = ConnectionState.Error(error)
-        resetAudioSessionConfigNative()
+        jniBridge.resetAudioSessionConfigNative()
     }
 
-    @Suppress("unused")
-    private fun onControlRequestHandled(method: String) {
-        if (
-            method == "GET /server-info" ||
-            method == "GET /slideshow-features" ||
-            method == "PUT /photo" ||
-            method == "PUT /slideshows/1" ||
-            method == "POST /stop" ||
-            method == "/play" ||
-            method == "/scrub" ||
-            method == "/rate" ||
-            method == "/playback-info" ||
-            method == "/event" ||
-            method == "/setProperty"
-        ) {
-            Logger.i(Logger.TAG_PROTOCOL, "Native media control handled: $method")
-        }
-        _sessionActivity.tryEmit(method)
+    override fun onControlRequestHandled(method: String) {
+        mediaDispatcher.onControlRequestHandled(method)
     }
 
-    @Suppress("unused")
-    private fun onPairSetup(data: ByteArray): ByteArray? {
+    override fun onPairSetup(data: ByteArray): ByteArray? {
         return pairingManager.handlePairSetup(data)
     }
 
-    @Suppress("unused")
-    private fun onPairVerify(data: ByteArray): ByteArray? {
+    override fun onPairVerify(data: ByteArray): ByteArray? {
         return pairingManager.handlePairVerify(data)
     }
 
-    @Suppress("unused")
-    private fun onSetupRequest(data: ByteArray): ByteArray? {
+    override fun onSetupRequest(data: ByteArray): ByteArray? {
         return mirroringSession.buildSetupResponse(data)
     }
 
-    @Suppress("unused")
-    private fun onAudioSync(rtpSync: Long, remoteNtpUs: Long, localNtpUs: Long, initial: Boolean) {
+    override fun onAudioSync(rtpSync: Long, remoteNtpUs: Long, localNtpUs: Long, initial: Boolean) {
         audioPipeline.handleSync(rtpSync, remoteNtpUs, localNtpUs, initial)
     }
 
@@ -359,8 +316,7 @@ class ProtocolHandler(
      * Callback de pacote de vídeo de mirroring do código nativo
      * Emite sessionActivity com throttling para evitar overhead
      */
-    @Suppress("unused")
-    private fun onMirroringVideoPacket(payloadType: Int, data: ByteArray) {
+    override fun onMirroringVideoPacket(payloadType: Int, data: ByteArray) {
         // Throttle sessionActivity para evitar emitir a cada frame (30-60 fps)
         val now = System.currentTimeMillis()
         if (now - lastActivityTime >= activityThrottleMs) {
@@ -371,8 +327,7 @@ class ProtocolHandler(
         mirroringSession.handleVideoPacket(payloadType, data)
     }
 
-    @Suppress("unused")
-    private fun onPhotoPlaybackSession(
+    override fun onPhotoPlaybackSession(
         clientIp: String,
         sessionId: String,
         assetKey: String,
@@ -380,58 +335,21 @@ class ProtocolHandler(
         imageData: ByteArray,
         isSlideshow: Boolean
     ) {
-        Logger.i(
-            Logger.TAG_PROTOCOL,
-            "Media callback photo: client=$clientIp sessionId=${sessionId.ifEmpty { "none" }} " +
-                "bytes=${imageData.size} assetKey=${assetKey.ifEmpty { "none" }} " +
-                "transition=${transition ?: "none"} slideshow=$isSlideshow"
-        )
-
-        _sessionActivity.tryEmit(if (isSlideshow) "SLIDESHOW_PHOTO" else "PHOTO")
-        _mediaPlaybackState.value = playbackStateStore.onPhotoPlayback(
-            clientIp = clientIp,
-            sessionId = sessionId,
-            assetKey = assetKey,
-            transition = transition,
-            imageData = imageData,
-            isSlideshow = isSlideshow,
-        )
+        mediaDispatcher.onPhotoPlaybackSession(clientIp, sessionId, assetKey, transition, imageData, isSlideshow)
     }
 
-    @Suppress("unused")
-    private fun onSlideshowPlaybackState(
+    override fun onSlideshowPlaybackState(
         clientIp: String,
         sessionId: String,
         theme: String?,
         slideDurationSeconds: Int,
         state: String
     ) {
-        Logger.i(
-            Logger.TAG_PROTOCOL,
-                "Media callback slideshow: client=$clientIp sessionId=${sessionId.ifEmpty { "none" }} " +
-                "state=$state theme=${theme ?: "none"} duration=${slideDurationSeconds}s " +
-                "hasImage=${playbackStateStore.hasCachedImage()}"
-        )
-        _sessionActivity.tryEmit("SLIDESHOW_STATE")
-        _mediaPlaybackState.value = playbackStateStore.onSlideshowState(
-            clientIp = clientIp,
-            sessionId = sessionId,
-            theme = theme,
-            slideDurationSeconds = slideDurationSeconds,
-            state = state,
-        )
+        mediaDispatcher.onSlideshowPlaybackState(clientIp, sessionId, theme, slideDurationSeconds, state)
     }
 
-    @Suppress("unused")
-    private fun onMediaPlaybackStopped(sessionId: String) {
-        Logger.i(
-            Logger.TAG_PROTOCOL,
-            "Media callback stop: sessionId=${sessionId.ifEmpty { "none" }} " +
-                "lastAsset=${playbackStateStore.currentAssetKey() ?: "none"} hadImage=${playbackStateStore.hasCachedImage()}"
-        )
-        playbackStateStore.reset()
-        _sessionActivity.tryEmit("MEDIA_STOP")
-        _mediaPlaybackState.value = MediaPlaybackState.Idle
+    override fun onMediaPlaybackStopped(sessionId: String) {
+        mediaDispatcher.onMediaPlaybackStopped(sessionId)
     }
     
     /**
@@ -440,8 +358,7 @@ class ProtocolHandler(
      * @param data Pacote RTP completo
      * @param timestamp Timestamp RTP (90kHz)
      */
-    @Suppress("unused")
-    private fun onVideoData(data: ByteArray, @Suppress("UNUSED_PARAMETER") timestamp: Long) {
+    override fun onVideoData(data: ByteArray, @Suppress("UNUSED_PARAMETER") timestamp: Long) {
         _sessionActivity.tryEmit("VIDEO")
         // Parsear pacote RTP
         val packet = rtpParser.parsePacket(data, data.size)
@@ -461,8 +378,7 @@ class ProtocolHandler(
      * O RTPReceiver nativo já removeu o header RTP; aqui recebemos apenas o payload
      * MPEG4-generic e precisamos extrair os Access Units AAC antes de enviar ao decoder.
      */
-    @Suppress("unused")
-    private fun onAudioData(data: ByteArray, timestamp: Long) {
+    override fun onAudioData(data: ByteArray, timestamp: Long) {
         _sessionActivity.tryEmit("AUDIO")
         audioPipeline.handlePayload(data, timestamp)
     }

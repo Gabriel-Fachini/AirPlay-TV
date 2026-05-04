@@ -27,7 +27,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved) {
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_airplay_tv_protocol_ProtocolHandler_getVersionFromJNI(
+Java_com_airplay_tv_protocol_AirPlayJniBridge_getVersionFromJNI(
         JNIEnv* env,
         jobject /* this */) {
     std::string version = "AirPlay Native Library v1.0 (Fase 4)";
@@ -36,7 +36,7 @@ Java_com_airplay_tv_protocol_ProtocolHandler_getVersionFromJNI(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_airplay_tv_protocol_ProtocolHandler_startRTSPServerNative(
+Java_com_airplay_tv_protocol_AirPlayJniBridge_startRTSPServerNative(
         JNIEnv* env,
         jobject thiz,
         jint port) {
@@ -80,7 +80,7 @@ Java_com_airplay_tv_protocol_ProtocolHandler_startRTSPServerNative(
 }
 
 JNIEXPORT void JNICALL
-Java_com_airplay_tv_protocol_ProtocolHandler_stopRTSPServerNative(
+Java_com_airplay_tv_protocol_AirPlayJniBridge_stopRTSPServerNative(
         JNIEnv* env,
         jobject /* this */) {
     
@@ -101,7 +101,7 @@ Java_com_airplay_tv_protocol_ProtocolHandler_stopRTSPServerNative(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_airplay_tv_protocol_ProtocolHandler_isServerRunningNative(
+Java_com_airplay_tv_protocol_AirPlayJniBridge_isServerRunningNative(
         JNIEnv* env,
         jobject /* this */) {
     
@@ -109,7 +109,7 @@ Java_com_airplay_tv_protocol_ProtocolHandler_isServerRunningNative(
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_airplay_tv_protocol_ProtocolHandler_getClientIpNative(
+Java_com_airplay_tv_protocol_AirPlayJniBridge_getClientIpNative(
         JNIEnv* env,
         jobject /* this */) {
     
@@ -122,7 +122,7 @@ Java_com_airplay_tv_protocol_ProtocolHandler_getClientIpNative(
 }
 
 JNIEXPORT jintArray JNICALL
-Java_com_airplay_tv_protocol_ProtocolHandler_getVideoResolutionNative(
+Java_com_airplay_tv_protocol_AirPlayJniBridge_getVideoResolutionNative(
         JNIEnv* env,
         jobject /* this */) {
     
@@ -139,7 +139,7 @@ Java_com_airplay_tv_protocol_ProtocolHandler_getVideoResolutionNative(
 }
 
 JNIEXPORT jintArray JNICALL
-Java_com_airplay_tv_protocol_ProtocolHandler_getAudioConfigNative(
+Java_com_airplay_tv_protocol_AirPlayJniBridge_getAudioConfigNative(
         JNIEnv* env,
         jobject /* this */) {
     
@@ -156,7 +156,7 @@ Java_com_airplay_tv_protocol_ProtocolHandler_getAudioConfigNative(
 }
 
 JNIEXPORT void JNICALL
-Java_com_airplay_tv_protocol_ProtocolHandler_updateAudioSessionConfigNative(
+Java_com_airplay_tv_protocol_AirPlayJniBridge_updateAudioSessionConfigNative(
         JNIEnv*,
         jobject,
         jint compressionType,
@@ -190,7 +190,7 @@ Java_com_airplay_tv_protocol_ProtocolHandler_updateAudioSessionConfigNative(
 }
 
 JNIEXPORT void JNICALL
-Java_com_airplay_tv_protocol_ProtocolHandler_resetAudioSessionConfigNative(
+Java_com_airplay_tv_protocol_AirPlayJniBridge_resetAudioSessionConfigNative(
         JNIEnv*,
         jobject) {
     if (g_server != nullptr) {
@@ -199,7 +199,7 @@ Java_com_airplay_tv_protocol_ProtocolHandler_resetAudioSessionConfigNative(
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_com_airplay_tv_protocol_ProtocolHandler_decryptFairPlayAesKeyNative(
+Java_com_airplay_tv_protocol_AirPlayJniBridge_decryptFairPlayAesKeyNative(
         JNIEnv* env,
         jobject /* this */,
         jbyteArray encryptedKey) {
@@ -230,7 +230,7 @@ Java_com_airplay_tv_protocol_ProtocolHandler_decryptFairPlayAesKeyNative(
 }
 
 JNIEXPORT jint JNICALL
-Java_com_airplay_tv_protocol_ProtocolHandler_startMirrorVideoServerNative(
+Java_com_airplay_tv_protocol_AirPlayJniBridge_startMirrorVideoServerNative(
         JNIEnv* /* env */,
         jobject /* this */) {
     if (g_server == nullptr) {
