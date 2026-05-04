@@ -1,5 +1,6 @@
 package com.airplay.tv.protocol
 
+import com.airplay.tv.media.containsIdrNalUnit
 import com.airplay.tv.media.VideoDecoder
 import com.airplay.tv.util.Constants
 import com.airplay.tv.util.Logger
@@ -11,9 +12,6 @@ import com.dd.plist.NSDictionary
 import com.dd.plist.NSNumber
 import java.nio.ByteBuffer
 import java.security.MessageDigest
-import javax.crypto.Cipher
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
 
 internal fun formatAirPlayStreamConnectionId(value: Long): String = java.lang.Long.toUnsignedString(value)
 
@@ -83,12 +81,10 @@ class AirPlayMirroringSession(
                         currentDecryptor.decodeVideoPayload(payload)
                     } catch (e: Exception) {
                         Logger.w(Logger.TAG_PROTOCOL, "Decryption failed, trying unencrypted: ${e.message}")
-                        // Fallback: try parsing as unencrypted NAL units
-                        parseUnencryptedNalUnits(payload)
+                        parseMirroringVideoPayload(payload)
                     }
                 } else {
-                    // No decryptor available, try parsing as unencrypted
-                    parseUnencryptedNalUnits(payload)
+                    parseMirroringVideoPayload(payload)
                 }
                 
                 if (frame != null && frame.isNotEmpty()) {
@@ -99,10 +95,13 @@ class AirPlayMirroringSession(
             1 -> {
                 // Type 1: Codec config (SPS/PPS) - NOT encrypted
                 // Extract SPS and PPS and configure decoder
-                val codecData = extractCodecConfigData(payload)
+                val codecData = parseAirPlayCodecConfig(payload)
                 if (codecData != null) {
-                    val (sps, pps, width, height) = codecData
-                    cachedCodecPrefix = buildAnnexBCodecPrefix(payload)
+                    val sps = codecData.sps
+                    val pps = codecData.pps
+                    val width = codecData.width
+                    val height = codecData.height
+                    cachedCodecPrefix = codecData.buildAnnexBPrefix()
                     shouldPrependCodecPrefix = cachedCodecPrefix != null
                     Logger.i(Logger.TAG_PROTOCOL, "Received codec config: ${width}x${height}, SPS=${sps.remaining()}B, PPS=${pps.remaining()}B")
                     
@@ -122,7 +121,7 @@ class AirPlayMirroringSession(
             5 -> {
                 // Try to extract codec config from type 5 if it looks like avcC format
                 if (payload.size > 11 && payload[0].toInt() == 1) {
-                    val codecConfig = extractCodecConfig(payload)
+                    val codecConfig = parseAirPlayCodecConfig(payload)?.buildAnnexBPrefix()
                     if (codecConfig != null) {
                         videoDecoder?.queueFrame(
                             data = codecConfig,
@@ -137,39 +136,6 @@ class AirPlayMirroringSession(
             else -> {
             }
         }
-    }
-    
-    /**
-     * Parse unencrypted NAL units (4-byte size + NAL data format)
-     */
-    private fun parseUnencryptedNalUnits(payload: ByteArray): ByteArray? {
-        var inputOffset = 0
-        var outputOffset = 0
-        val output = ByteArray(payload.size * 2)
-        var nalCount = 0
-        
-        while (inputOffset + 4 <= payload.size) {
-            val nalSize = ((payload[inputOffset].toInt() and 0xFF) shl 24) or
-                          ((payload[inputOffset + 1].toInt() and 0xFF) shl 16) or
-                          ((payload[inputOffset + 2].toInt() and 0xFF) shl 8) or
-                          (payload[inputOffset + 3].toInt() and 0xFF)
-            
-            if (nalSize <= 0 || inputOffset + 4 + nalSize > payload.size) {
-                if (nalCount == 0) {
-                    Logger.w(Logger.TAG_PROTOCOL, "Invalid NAL size in unencrypted payload: $nalSize")
-                }
-                break
-            }
-
-            ANNEX_B_START_CODE.copyInto(output, outputOffset)
-            outputOffset += ANNEX_B_START_CODE.size
-            payload.copyInto(output, outputOffset, inputOffset + 4, inputOffset + 4 + nalSize)
-            outputOffset += nalSize
-            inputOffset += 4 + nalSize
-            nalCount++
-        }
-        
-        return if (nalCount > 0) output.copyOf(outputOffset) else null
     }
 
     private fun buildInitialSetupResponse(root: NSDictionary): ByteArray? {
@@ -309,120 +275,20 @@ class AirPlayMirroringSession(
         )
     }
 
-    private fun extractCodecConfigData(payload: ByteArray): Tuple4<ByteBuffer, ByteBuffer, Int, Int>? {
-        if (payload.size < 11) {
-            Logger.w(Logger.TAG_PROTOCOL, "Codec config payload too small: ${payload.size} bytes")
-            return null
-        }
-
-        // Extract dimensions from header (bytes 56-63 according to UxPlay)
-        // But first try the avcC format parsing
-        val spsSize = readUInt16(payload, 6)
-        val spsStart = 8
-        val spsEnd = spsStart + spsSize
-        if (spsEnd >= payload.size) {
-            Logger.w(Logger.TAG_PROTOCOL, "Invalid SPS size in codec config: $spsSize")
-            return null
-        }
-
-        val ppsCountIndex = spsEnd
-        if (ppsCountIndex + 2 >= payload.size) {
-            Logger.w(Logger.TAG_PROTOCOL, "Codec config missing PPS section")
-            return null
-        }
-
-        val ppsSize = readUInt16(payload, ppsCountIndex + 1)
-        val ppsStart = ppsCountIndex + 3
-        val ppsEnd = ppsStart + ppsSize
-        if (ppsEnd > payload.size) {
-            Logger.w(Logger.TAG_PROTOCOL, "Invalid PPS size in codec config: $ppsSize")
-            return null
-        }
-
-        // Extract SPS and PPS as ByteBuffers
-        val sps = ByteBuffer.allocateDirect(spsSize)
-        sps.put(payload, spsStart, spsSize)
-        sps.flip()
-        
-        val pps = ByteBuffer.allocateDirect(ppsSize)
-        pps.put(payload, ppsStart, ppsSize)
-        pps.flip()
-        
-        // Try to extract dimensions - default to 1920x1080 if not found
-        var width = 1920
-        var height = 1080
-        
-        // UxPlay shows dimensions are at bytes 56-63 in the 128-byte header
-        // But we only have the payload here, not the full header
-        // So we'll parse from SPS if possible, or use defaults
-        
-        return Tuple4(sps, pps, width, height)
-    }
-    
-    private data class Tuple4<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
-
-    private fun extractCodecConfig(payload: ByteArray): ByteArray? {
-        if (payload.size < 11) {
-            Logger.w(Logger.TAG_PROTOCOL, "Codec config payload too small: ${payload.size} bytes")
-            return null
-        }
-
-        val spsSize = readUInt16(payload, 6)
-        val spsStart = 8
-        val spsEnd = spsStart + spsSize
-        if (spsEnd >= payload.size) {
-            Logger.w(Logger.TAG_PROTOCOL, "Invalid SPS size in codec config: $spsSize")
-            return null
-        }
-
-        val ppsCountIndex = spsEnd
-        if (ppsCountIndex + 2 >= payload.size) {
-            Logger.w(Logger.TAG_PROTOCOL, "Codec config missing PPS section")
-            return null
-        }
-
-        val ppsSize = readUInt16(payload, ppsCountIndex + 1)
-        val ppsStart = ppsCountIndex + 3
-        val ppsEnd = ppsStart + ppsSize
-        if (ppsEnd > payload.size) {
-            Logger.w(Logger.TAG_PROTOCOL, "Invalid PPS size in codec config: $ppsSize")
-            return null
-        }
-
-        val result = ByteArray(ANNEX_B_START_CODE.size * 2 + spsSize + ppsSize)
-        var offset = 0
-        ANNEX_B_START_CODE.copyInto(result, offset)
-        offset += ANNEX_B_START_CODE.size
-        payload.copyInto(result, offset, spsStart, spsEnd)
-        offset += spsSize
-        ANNEX_B_START_CODE.copyInto(result, offset)
-        offset += ANNEX_B_START_CODE.size
-        payload.copyInto(result, offset, ppsStart, ppsEnd)
-        return result
-    }
-
-    private fun buildAnnexBCodecPrefix(payload: ByteArray): ByteArray? {
-        val codecPrefix = extractCodecConfig(payload)
-        if (codecPrefix == null) {
-            Logger.w(Logger.TAG_PROTOCOL, "Failed to cache SPS/PPS prefix from codec config")
-        }
-        return codecPrefix
-    }
-
     private fun queueMirroringFrame(frame: ByteArray, timestamp90Khz: Long) {
-        val isKeyFrame = containsIdrNal(frame)
+        val isKeyFrame = containsIdrNalUnit(frame)
         val frameToQueue = maybePrependCodecPrefix(frame, isKeyFrame)
         mirroredVideoFramesQueued++
         if (mirroredVideoFramesQueued <= 3) {
             Logger.i(
                 Logger.TAG_PROTOCOL,
-                "Queueing mirrored frame #$mirroredVideoFramesQueued (${frameToQueue.size} bytes, keyFrame=${containsIdrNal(frameToQueue)})"
+                "Queueing mirrored frame #$mirroredVideoFramesQueued (${frameToQueue.size} bytes, keyFrame=${containsIdrNalUnit(frameToQueue)})"
             )
         }
         videoDecoder?.queueFrame(
             data = frameToQueue,
             timestamp = timestamp90Khz,
-            isKeyFrame = containsIdrNal(frameToQueue),
+            isKeyFrame = containsIdrNalUnit(frameToQueue),
         )
     }
 
@@ -436,38 +302,11 @@ class AirPlayMirroringSession(
         codecPrefix.copyInto(prefixedFrame, 0)
         frame.copyInto(prefixedFrame, codecPrefix.size)
 
-        if (isKeyFrame && videoDecoder?.state?.value == VideoDecoder.DecoderState.Running) {
+        if (isKeyFrame && videoDecoder?.state?.value == com.airplay.tv.media.DecoderState.Running) {
             shouldPrependCodecPrefix = false
         }
 
         return prefixedFrame
-    }
-
-    private fun containsIdrNal(frame: ByteArray): Boolean {
-        var index = 0
-        while (index + ANNEX_B_START_CODE.size < frame.size) {
-            if (frame[index] == 0.toByte() &&
-                frame[index + 1] == 0.toByte() &&
-                frame[index + 2] == 0.toByte() &&
-                frame[index + 3] == 1.toByte()
-            ) {
-                val nalHeaderIndex = index + ANNEX_B_START_CODE.size
-                if (nalHeaderIndex < frame.size) {
-                    val nalType = frame[nalHeaderIndex].toInt() and 0x1F
-                    if (nalType == 5) {
-                        return true
-                    }
-                }
-                index = nalHeaderIndex
-            } else {
-                index++
-            }
-        }
-        return false
-    }
-
-    private fun readUInt16(buffer: ByteArray, offset: Int): Int {
-        return ((buffer[offset].toInt() and 0xFF) shl 8) or (buffer[offset + 1].toInt() and 0xFF)
     }
 
     private class NSMutablePlistArray {
@@ -482,135 +321,6 @@ class AirPlayMirroringSession(
         fun toNSArray(): NSArray = NSArray(*items.toTypedArray())
     }
 
-    private class VideoStreamDecryptor(
-        streamConnectionId: Long,
-        masterKey: ByteArray,
-        sharedSecret: ByteArray,
-    ) {
-        private val cipher: Cipher
-        private var pendingKeystream: ByteArray? = null
-        private var pendingOffset = 0
-
-        init {
-            // Match RPiPlay's key derivation exactly:
-            // 1. eaeskey = SHA512(masterKey[16] + sharedSecret[32]) - use FULL 64-byte hash
-            val eaeskey = ByteArray(64)
-            val tempKey = ByteArray(16)
-            masterKey.copyInto(tempKey, 0, 0, minOf(16, masterKey.size))
-            val eaeskeyHash = sha512(tempKey + sharedSecret)
-            eaeskeyHash.copyInto(eaeskey, 0, 0, minOf(64, eaeskeyHash.size))
-
-            // The reference implementations format streamConnectionID as unsigned uint64 text.
-            // Using Kotlin's signed Long string breaks AES-CTR key derivation when the high bit is set.
-            val streamConnectionIdText = formatAirPlayStreamConnectionId(streamConnectionId)
-
-            // 2. videoKey = SHA512("AirPlayStreamKey{id}" + eaeskey[16]) - first 16 bytes of eaeskey
-            val keyString = "AirPlayStreamKey$streamConnectionIdText"
-            val videoKey = sha512(keyString.toByteArray() + eaeskey.copyOf(16)).copyOf(AES_BLOCK_SIZE)
-
-            // 3. videoIv = SHA512("AirPlayStreamIV{id}" + eaeskey[16]) - first 16 bytes of eaeskey
-            val ivString = "AirPlayStreamIV$streamConnectionIdText"
-            val videoIv = sha512(ivString.toByteArray() + eaeskey.copyOf(16)).copyOf(AES_BLOCK_SIZE)
-
-            cipher = Cipher.getInstance("AES/CTR/NoPadding").apply {
-                init(Cipher.ENCRYPT_MODE, SecretKeySpec(videoKey, "AES"), IvParameterSpec(videoIv))
-            }
-        }
-
-        fun decodeVideoPayload(payload: ByteArray): ByteArray {
-            val decrypted = decrypt(payload)
-
-            var inputOffset = 0
-            var outputOffset = 0
-            val output = ByteArray(decrypted.size * 2) // Allocate more space for start codes
-
-            var nalCount = 0
-            while (inputOffset + 4 <= decrypted.size) {
-                val nalSize = readInt32(decrypted, inputOffset)
-
-                if (nalSize <= 0 || inputOffset + 4 + nalSize > decrypted.size) {
-                    if (nalCount == 0) {
-                        Logger.w(Logger.TAG_PROTOCOL, "Invalid first NAL size: $nalSize (payload size=${decrypted.size})")
-                    }
-                    break
-                }
-
-                ANNEX_B_START_CODE.copyInto(output, outputOffset)
-                outputOffset += ANNEX_B_START_CODE.size
-                decrypted.copyInto(output, outputOffset, inputOffset + 4, inputOffset + 4 + nalSize)
-                outputOffset += nalSize
-                inputOffset += 4 + nalSize
-                nalCount++
-            }
-
-            return output.copyOf(outputOffset)
-        }
-
-        private fun decrypt(input: ByteArray): ByteArray {
-            // RPiPlay-style decryption with proper handling of partial blocks
-            val output = ByteArray(input.size)
-            var inputOffset = 0
-            var outputOffset = 0
-
-            // Handle pending bytes from previous packet
-            val pending = pendingKeystream
-            if (pending != null && pendingOffset > 0) {
-                val pendingStart = AES_BLOCK_SIZE - pendingOffset
-                while (pendingOffset < AES_BLOCK_SIZE && inputOffset < input.size) {
-                    output[outputOffset++] = (input[inputOffset++].toInt() xor pending[pendingStart + (pendingOffset - pendingStart)].toInt()).toByte()
-                    pendingOffset++
-                }
-                if (pendingOffset >= AES_BLOCK_SIZE) {
-                    pendingKeystream = null
-                    pendingOffset = 0
-                }
-            }
-
-            // Decrypt full blocks
-            val remaining = input.size - inputOffset
-            val alignedLength = (remaining / AES_BLOCK_SIZE) * AES_BLOCK_SIZE
-            if (alignedLength > 0) {
-                // Decrypt in place for efficiency
-                val decryptedChunk = cipher.update(input, inputOffset, alignedLength)
-                if (decryptedChunk != null) {
-                    decryptedChunk.copyInto(output, outputOffset)
-                    outputOffset += decryptedChunk.size
-                }
-                inputOffset += alignedLength
-            }
-
-            // Handle remaining bytes (partial block)
-            val tailLength = input.size - inputOffset
-            if (tailLength > 0) {
-                // Pad to full block and decrypt
-                val paddedTail = ByteArray(AES_BLOCK_SIZE)
-                input.copyInto(paddedTail, 0, inputOffset, input.size)
-                val decryptedTail = cipher.update(paddedTail) ?: ByteArray(AES_BLOCK_SIZE)
-                
-                // Copy only the actual data bytes
-                decryptedTail.copyInto(output, outputOffset, 0, tailLength)
-                outputOffset += tailLength
-                
-                // Save remaining keystream for next packet
-                pendingKeystream = decryptedTail
-                pendingOffset = tailLength
-            }
-
-            return output
-        }
-
-        private fun readInt32(buffer: ByteArray, offset: Int): Int {
-            return ((buffer[offset].toInt() and 0xFF) shl 24) or
-                ((buffer[offset + 1].toInt() and 0xFF) shl 16) or
-                ((buffer[offset + 2].toInt() and 0xFF) shl 8) or
-                (buffer[offset + 3].toInt() and 0xFF)
-        }
-
-        private fun sha512(data: ByteArray): ByteArray {
-            return MessageDigest.getInstance("SHA-512").digest(data)
-        }
-    }
-
     private companion object {
         const val AES_BLOCK_SIZE = 16
         const val ENCRYPTED_AES_KEY_SIZE = 72
@@ -621,7 +331,6 @@ class AirPlayMirroringSession(
         const val TIMING_PORT = 7002
         const val LEGACY_AUDIO_DATA_PORT = 7100
         const val LEGACY_AUDIO_CONTROL_PORT = 6001
-        val ANNEX_B_START_CODE = byteArrayOf(0x00, 0x00, 0x00, 0x01)
     }
 }
 

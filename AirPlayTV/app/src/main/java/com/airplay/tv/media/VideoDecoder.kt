@@ -14,29 +14,6 @@ import java.nio.ByteBuffer
 import java.util.concurrent.LinkedBlockingQueue
 import kotlin.coroutines.coroutineContext
 
-internal fun buildCodecSpecificDataBuffer(nalUnit: ByteBuffer): ByteBuffer {
-    val source = nalUnit.duplicate()
-    val bytes = ByteArray(source.remaining())
-    source.get(bytes)
-
-    val hasStartCode = bytes.size >= 4 &&
-        bytes[0] == 0.toByte() &&
-        bytes[1] == 0.toByte() &&
-        bytes[2] == 0.toByte() &&
-        bytes[3] == 1.toByte()
-
-    val outputBytes = if (hasStartCode) {
-        bytes
-    } else {
-        byteArrayOf(0, 0, 0, 1) + bytes
-    }
-
-    return ByteBuffer.allocateDirect(outputBytes.size).apply {
-        put(outputBytes)
-        flip()
-    }
-}
-
 /**
  * Decodificador de vídeo H.264 usando MediaCodec
  * Renderiza frames em SurfaceView
@@ -45,16 +22,6 @@ class VideoDecoder(
     private val telemetryCollector: TelemetryCollector,
     private val onVideoSizeChanged: (width: Int, height: Int) -> Unit = { _, _ -> }
 ) {
-    
-    /**
-     * Estado do decoder
-     */
-    sealed class DecoderState {
-        object Idle : DecoderState()
-        object Configured : DecoderState()
-        object Running : DecoderState()
-        data class Error(val message: String) : DecoderState()
-    }
     
     private val _state = MutableStateFlow<DecoderState>(DecoderState.Idle)
     val state: StateFlow<DecoderState> = _state.asStateFlow()
@@ -276,7 +243,7 @@ class VideoDecoder(
         }
         
         // Validar frame antes de enfileirar
-        if (!isValidH264Frame(data)) {
+        if (!isValidAnnexBFrame(data)) {
             framesDropped++
             if (framesDropped % 10 == 0L) {
                 Logger.w(Logger.TAG_VIDEO, "Dropping invalid H.264 frame (total dropped=$framesDropped)")
@@ -324,42 +291,6 @@ class VideoDecoder(
         if (framesDropped % 10 == 0L) {
             Logger.w(Logger.TAG_VIDEO, "Input queue full, dropping frames (total dropped=$framesDropped)")
         }
-    }
-    
-    /**
-     * Valida se um frame H.264 está bem formado
-     * Verifica se contém pelo menos um NAL unit válido com start code
-     */
-    private fun isValidH264Frame(data: ByteArray): Boolean {
-        if (data.size < 5) { // Mínimo: start code (4 bytes) + NAL header (1 byte)
-            return false
-        }
-        
-        // Procurar por start code (0x00 0x00 0x00 0x01)
-        var hasValidNal = false
-        var i = 0
-        while (i <= data.size - 4) {
-            if (data[i] == 0.toByte() && 
-                data[i + 1] == 0.toByte() && 
-                data[i + 2] == 0.toByte() && 
-                data[i + 3] == 1.toByte()) {
-                
-                // Verificar se há NAL header após o start code
-                if (i + 4 < data.size) {
-                    val nalHeader = data[i + 4].toInt() and 0xFF
-                    val nalType = nalHeader and 0x1F
-                    
-                    // NAL types válidos: 1-5 (VCL), 6-12 (non-VCL), 7 (SPS), 8 (PPS)
-                    if (nalType in 1..12) {
-                        hasValidNal = true
-                        break
-                    }
-                }
-            }
-            i++
-        }
-        
-        return hasValidNal
     }
     
     /**

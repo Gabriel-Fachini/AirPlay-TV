@@ -20,17 +20,6 @@ import kotlin.coroutines.coroutineContext
  * Reproduz áudio via AudioTrack
  */
 class AudioDecoder {
-    
-    /**
-     * Estado do decoder
-     */
-    sealed class DecoderState {
-        object Idle : DecoderState()
-        object Configured : DecoderState()
-        object Running : DecoderState()
-        data class Error(val message: String) : DecoderState()
-    }
-    
     private val _state = MutableStateFlow<DecoderState>(DecoderState.Idle)
     val state: StateFlow<DecoderState> = _state.asStateFlow()
     

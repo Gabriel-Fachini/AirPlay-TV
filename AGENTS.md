@@ -5,58 +5,54 @@
 - AirPlay mirroring receiver for Android TV (Sony KD-55X755F, API 28, ~7 years old)
 - Personal/home use, single-session, no PIN authentication
 - Stack: Kotlin + C++/NDK, MVVM simple, Coroutines
-- Source: `AirPlayTV/app/src/main/java/com/airplay/tv/`
-- Native: `AirPlayTV/app/src/main/cpp/`
+- Kotlin source: `AirPlayTV/app/src/main/java/com/airplay/tv/`
+- Native source: `AirPlayTV/app/src/main/cpp/`
+
+## Session Entry
+
+- Default reading flow: `AGENTS.md -> .specs/design.md -> scoped AGENTS -> target files`
+- Normal tasks should name the layer early: `ui`, `service`, `protocol`, `media`, or `cpp`
+- Prefer narrowing work to 2-4 files instead of broad repo sweeps
 
 ## Build & Run
 
 ```bash
-cd AirPlayTV && ./gradlew assembleDebug                    # Build
-adb install -r app/build/outputs/apk/debug/app-debug.apk   # Install
-adb logcat | grep "AirPlay"                                 # Logs
-cd AirPlayTV && ./gradlew test                              # Unit tests
+cd AirPlayTV && ./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb logcat | grep "AirPlay"
+cd AirPlayTV && ./gradlew test
 ```
 
 ## Architecture
 
-- Layers: `ui/` → `service/` → `protocol/` + `network/` + `media/`
-- UI states: `Idle → Connecting → Mirroring → Idle` (or `→ Error → Idle`)
-- Video: mirroring TCP via MirrorServer → AirPlayMirroringSession → VideoDecoder → SurfaceView
-- Audio: RTP UDP via RTPReceiver → AudioDecoder → AudioTrack
-- Native C++ modules: `protocol/` (RTSP, FairPlay), `network/` (RTP, Mirror, NTP)
+- Layers: `ui/` -> `service/` -> `protocol/` + `network/` + `media/`
+- UI states: `Idle -> Connecting -> Mirroring -> Idle` or `Error -> Idle`
+- Video: Mirror TCP -> `AirPlayMirroringSession` -> `VideoDecoder` -> `SurfaceView`
+- Audio: RTP UDP -> `ProtocolHandler` -> `AudioDecoder` -> `AudioTrack`
 
-## Immutable Decisions (DO NOT CHANGE without asking)
+## Immutable Decisions
 
-- NsdManager for mDNS (not jmdns)
-- MediaCodec H.264 + SurfaceView (not ExoPlayer)
-- MediaCodec AAC + AudioTrack
-- MVVM simple (no Hilt/Koin/Dagger)
-- Coroutines for async (not RxJava)
+- `NsdManager` for mDNS, not jmdns
+- `MediaCodec` H.264 + `SurfaceView`, not ExoPlayer
+- `MediaCodec` AAC + `AudioTrack`
+- MVVM simple, no DI framework
+- Coroutines for async
 - Single session, no auto-reconnect
 - Min API 28, target Android TV
 
-## Code Conventions
+## Key References
 
-- Log tags: `TAG_MDNS`, `TAG_PROTOCOL`, `TAG_VIDEO`, `TAG_AUDIO`, `TAG_SESSION`
-- Classes: PascalCase (`AirPlayService`), Functions: camelCase (`startSession()`)
-- Constants: UPPER_SNAKE_CASE in `Constants.kt` or companion objects
-- Always release resources in finally/catch (MediaCodec, AudioTrack, sockets)
-- Never block main thread — use `Dispatchers.IO` or dedicated threads
-- Min API 28 — verify compat before using newer APIs
-
-## Key Reference Files
-
-- **Requirements**: `.specs/specs.md`
-- **Design/Architecture**: `.specs/design.md`
-- **Tasks**: `.specs/task.md`
-- **Decisions & resolved issues**: `.kiro/memory.md`
-- **Kotlin-specific rules**: `AirPlayTV/app/src/main/java/com/airplay/tv/AGENTS.md`
-- **Native-specific rules**: `AirPlayTV/app/src/main/cpp/AGENTS.md`
+- Requirements: `.specs/specs.md`
+- Design: `.specs/design.md`
+- Tasks: `.specs/task.md`
+- Facts and gotchas: `.kiro/memory.md`
+- Kotlin rules: `AirPlayTV/app/src/main/java/com/airplay/tv/AGENTS.md`
+- Native rules: `AirPlayTV/app/src/main/cpp/AGENTS.md`
 
 ## Anti-Patterns
 
-- Do NOT create documentation files without explicit request
-- Do NOT over-engineer (this is a personal MVP)
-- Do NOT explore `RPiPlay/`, `UxPlay/`, `vendor-docs/`, `.archive/` unless explicitly needed
-- Do NOT assume modern hardware — TV is 7 years old
-- Do NOT add DI frameworks, complex abstractions, or heavy dependencies
+- Do not create docs without explicit request
+- Do not over-engineer this MVP
+- Do not start in `UxPlay/`, `RPiPlay/`, `vendor-docs/`, or `.archive/`
+- Do not assume modern hardware characteristics
+- Do not add new heavy abstractions or dependencies unless the task requires it

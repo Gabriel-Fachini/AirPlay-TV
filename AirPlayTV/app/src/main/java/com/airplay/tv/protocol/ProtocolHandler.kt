@@ -21,8 +21,6 @@ class ProtocolHandler(
     private val videoDecoder: VideoDecoder? = null,
     private val audioDecoder: AudioDecoder? = null
 ) {
-    private val audioAccessUnitExtractor = AudioAccessUnitExtractor()
-
     enum class SessionKind {
         MIRRORING,
         PHOTO,
@@ -30,6 +28,8 @@ class ProtocolHandler(
     }
 
     private val pairingManager = AirPlayPairingManager()
+    private val audioPipeline = ProtocolAudioPipeline(audioDecoder)
+    private val playbackStateStore = ProtocolPlaybackStateStore()
     private val mirroringSession = AirPlayMirroringSession(
         videoDecoder = videoDecoder,
         pairingManager = pairingManager,
@@ -40,10 +40,10 @@ class ProtocolHandler(
             _codecConfigReceived.tryEmit(CodecConfig(sps, pps, width, height))
         },
         onAudioCryptoConfigured = { config ->
-            audioFrameDecryptorSelector = config?.let { AudioFrameDecryptorSelector(it) }
+            audioPipeline.configureCrypto(config)
         },
         onAudioStreamConfigured = { config ->
-            currentAudioStreamConfig = config
+            audioPipeline.configureStream(config)
             updateAudioSessionConfigNative(
                 config.compressionType,
                 config.samplesPerFrame,
@@ -130,31 +130,9 @@ class ProtocolHandler(
         val audioStreamConfig: AudioStreamConfig,
     )
 
-    private data class AudioSyncState(
-        val rtpSync: Long,
-        val remoteNtpUs: Long,
-        val localNtpUs: Long,
-        val initial: Boolean,
-    )
-    
     private var currentSession: SessionInfo? = null
-    private var currentAudioStreamConfig = AudioStreamConfig()
-    private var currentAudioSyncState: AudioSyncState? = null
-    private var audioFrameDecryptorSelector: AudioFrameDecryptorSelector? = null
-    private var lastMediaImageData: ByteArray? = null
-    private var lastMediaAssetKey: String? = null
-    private var lastMediaTransition: String? = null
-    private var audioPayloadsReceived = 0L
-    private var audioAccessUnitsQueued = 0L
-    private var audioNoDataPacketsDropped = 0L
-    private var audioSyncEventsReceived = 0L
-    private var audioPayloadsBeforeSync = 0L
-    private var audioInvalidFramesDropped = 0L
     
     companion object {
-        const val AUDIO_RTP_SAMPLE_RATE = 44_100L
-        val AAC_ELD_NO_DATA_MARKER = byteArrayOf(0x00, 0x68, 0x34, 0x00)
-
         init {
             try {
                 System.loadLibrary("airplay-native")
@@ -207,16 +185,9 @@ class ProtocolHandler(
             Logger.i(Logger.TAG_PROTOCOL, "RTSP server started successfully")
             _connectionState.value = ConnectionState.Idle
             rtpParser.resetStats()
-            currentAudioStreamConfig = AudioStreamConfig()
-            currentAudioSyncState = null
-            audioFrameDecryptorSelector = null
+            audioPipeline.reset()
+            playbackStateStore.reset()
             resetAudioSessionConfigNative()
-            audioPayloadsReceived = 0L
-            audioAccessUnitsQueued = 0L
-            audioNoDataPacketsDropped = 0L
-            audioSyncEventsReceived = 0L
-            audioPayloadsBeforeSync = 0L
-            audioInvalidFramesDropped = 0L
         } else {
             Logger.e(Logger.TAG_PROTOCOL, "Failed to start RTSP server")
             _connectionState.value = ConnectionState.Error("Failed to start server")
@@ -238,19 +209,9 @@ class ProtocolHandler(
         
         stopRTSPServerNative()
         currentSession = null
-        currentAudioStreamConfig = AudioStreamConfig()
-        currentAudioSyncState = null
-        audioFrameDecryptorSelector = null
+        audioPipeline.reset()
         _mediaPlaybackState.value = MediaPlaybackState.Idle
-        lastMediaImageData = null
-        lastMediaAssetKey = null
-        lastMediaTransition = null
-        audioPayloadsReceived = 0L
-        audioAccessUnitsQueued = 0L
-        audioNoDataPacketsDropped = 0L
-        audioSyncEventsReceived = 0L
-        audioPayloadsBeforeSync = 0L
-        audioInvalidFramesDropped = 0L
+        playbackStateStore.reset()
         _connectionState.value = ConnectionState.Idle
         resetAudioSessionConfigNative()
         
@@ -282,7 +243,7 @@ class ProtocolHandler(
         
         val videoRes = getVideoResolutionNative()
         val audioConfig = getAudioConfigNative()
-        val streamConfig = currentAudioStreamConfig.let { configured ->
+        val streamConfig = audioPipeline.currentStreamConfig.let { configured ->
             if (configured.compressionType != 0 || configured.samplesPerFrame != 0) {
                 configured
             } else {
@@ -330,16 +291,9 @@ class ProtocolHandler(
     private fun onClientDisconnected() {
         Logger.i(Logger.TAG_PROTOCOL, "Client disconnected")
         currentSession = null
-        currentAudioStreamConfig = AudioStreamConfig()
-        currentAudioSyncState = null
-        audioFrameDecryptorSelector = null
-        audioPayloadsReceived = 0L
-        audioAccessUnitsQueued = 0L
-        audioInvalidFramesDropped = 0L
+        audioPipeline.reset()
         _mediaPlaybackState.value = MediaPlaybackState.Idle
-        lastMediaImageData = null
-        lastMediaAssetKey = null
-        lastMediaTransition = null
+        playbackStateStore.reset()
         pairingManager.resetSession()
         mirroringSession.reset()
         _connectionState.value = ConnectionState.Idle
@@ -352,20 +306,13 @@ class ProtocolHandler(
     @Suppress("unused")
     private fun onError(error: String) {
         Logger.e(Logger.TAG_PROTOCOL, "Protocol error: $error")
-        audioPayloadsReceived = 0L
-        audioAccessUnitsQueued = 0L
-        currentAudioStreamConfig = AudioStreamConfig()
-        currentAudioSyncState = null
-        audioFrameDecryptorSelector = null
+        audioPipeline.reset()
         _mediaPlaybackState.value = MediaPlaybackState.Idle
-        lastMediaImageData = null
-        lastMediaAssetKey = null
-        lastMediaTransition = null
+        playbackStateStore.reset()
         pairingManager.resetSession()
         mirroringSession.reset()
         _connectionState.value = ConnectionState.Error(error)
         resetAudioSessionConfigNative()
-        audioInvalidFramesDropped = 0L
     }
 
     @Suppress("unused")
@@ -405,20 +352,7 @@ class ProtocolHandler(
 
     @Suppress("unused")
     private fun onAudioSync(rtpSync: Long, remoteNtpUs: Long, localNtpUs: Long, initial: Boolean) {
-        audioSyncEventsReceived++
-        currentAudioSyncState = AudioSyncState(
-            rtpSync = rtpSync,
-            remoteNtpUs = remoteNtpUs,
-            localNtpUs = localNtpUs,
-            initial = initial,
-        )
-        if (initial || audioSyncEventsReceived <= 3L || audioSyncEventsReceived % 25L == 0L) {
-            Logger.i(
-                Logger.TAG_PROTOCOL,
-                "Audio sync#$audioSyncEventsReceived initial=$initial rtpSync=$rtpSync " +
-                    "remoteNtpUs=$remoteNtpUs localNtpUs=$localNtpUs queuedAUs=$audioAccessUnitsQueued"
-            )
-        }
+        audioPipeline.handleSync(rtpSync, remoteNtpUs, localNtpUs, initial)
     }
 
     /**
@@ -452,31 +386,16 @@ class ProtocolHandler(
                 "bytes=${imageData.size} assetKey=${assetKey.ifEmpty { "none" }} " +
                 "transition=${transition ?: "none"} slideshow=$isSlideshow"
         )
-        lastMediaImageData = imageData.copyOf()
-        lastMediaAssetKey = assetKey
-        lastMediaTransition = transition
 
         _sessionActivity.tryEmit(if (isSlideshow) "SLIDESHOW_PHOTO" else "PHOTO")
-        _mediaPlaybackState.value = if (isSlideshow) {
-            MediaPlaybackState.SlideshowPlaying(
-                clientIp = clientIp,
-                sessionId = sessionId,
-                theme = null,
-                slideDurationSeconds = 0,
-                state = "playing",
-                imageData = imageData.copyOf(),
-                assetKey = assetKey,
-                transition = transition
-            )
-        } else {
-            MediaPlaybackState.PhotoDisplayed(
-                clientIp = clientIp,
-                sessionId = sessionId,
-                assetKey = assetKey,
-                transition = transition,
-                imageData = imageData.copyOf()
-            )
-        }
+        _mediaPlaybackState.value = playbackStateStore.onPhotoPlayback(
+            clientIp = clientIp,
+            sessionId = sessionId,
+            assetKey = assetKey,
+            transition = transition,
+            imageData = imageData,
+            isSlideshow = isSlideshow,
+        )
     }
 
     @Suppress("unused")
@@ -489,25 +408,18 @@ class ProtocolHandler(
     ) {
         Logger.i(
             Logger.TAG_PROTOCOL,
-            "Media callback slideshow: client=$clientIp sessionId=${sessionId.ifEmpty { "none" }} " +
+                "Media callback slideshow: client=$clientIp sessionId=${sessionId.ifEmpty { "none" }} " +
                 "state=$state theme=${theme ?: "none"} duration=${slideDurationSeconds}s " +
-                "hasImage=${lastMediaImageData != null}"
+                "hasImage=${playbackStateStore.hasCachedImage()}"
         )
         _sessionActivity.tryEmit("SLIDESHOW_STATE")
-        _mediaPlaybackState.value = if (state.equals("stopped", ignoreCase = true)) {
-            MediaPlaybackState.Idle
-        } else {
-            MediaPlaybackState.SlideshowPlaying(
-                clientIp = clientIp,
-                sessionId = sessionId,
-                theme = theme,
-                slideDurationSeconds = slideDurationSeconds,
-                state = state,
-                imageData = lastMediaImageData?.copyOf(),
-                assetKey = lastMediaAssetKey,
-                transition = lastMediaTransition
-            )
-        }
+        _mediaPlaybackState.value = playbackStateStore.onSlideshowState(
+            clientIp = clientIp,
+            sessionId = sessionId,
+            theme = theme,
+            slideDurationSeconds = slideDurationSeconds,
+            state = state,
+        )
     }
 
     @Suppress("unused")
@@ -515,11 +427,9 @@ class ProtocolHandler(
         Logger.i(
             Logger.TAG_PROTOCOL,
             "Media callback stop: sessionId=${sessionId.ifEmpty { "none" }} " +
-                "lastAsset=${lastMediaAssetKey ?: "none"} hadImage=${lastMediaImageData != null}"
+                "lastAsset=${playbackStateStore.currentAssetKey() ?: "none"} hadImage=${playbackStateStore.hasCachedImage()}"
         )
-        lastMediaImageData = null
-        lastMediaAssetKey = null
-        lastMediaTransition = null
+        playbackStateStore.reset()
         _sessionActivity.tryEmit("MEDIA_STOP")
         _mediaPlaybackState.value = MediaPlaybackState.Idle
     }
@@ -554,106 +464,7 @@ class ProtocolHandler(
     @Suppress("unused")
     private fun onAudioData(data: ByteArray, timestamp: Long) {
         _sessionActivity.tryEmit("AUDIO")
-
-        val audioConfig = currentAudioStreamConfig
-        if (!audioConfig.isSupportedAac) {
-            if (audioPayloadsReceived == 0L) {
-                Logger.w(
-                    Logger.TAG_PROTOCOL,
-                    "Dropping audio payloads: negotiated codec unsupported " +
-                        "codec=${audioConfig.codecLabel} ct=${audioConfig.compressionType} " +
-                        "fmt=0x${audioConfig.audioFormat.toString(16)}"
-                )
-            }
-            audioPayloadsReceived++
-            return
-        }
-
-        if (isAacEldNoDataPacket(audioConfig, data)) {
-            audioNoDataPacketsDropped++
-            if (audioNoDataPacketsDropped <= 3L) {
-                Logger.d(
-                    Logger.TAG_PROTOCOL,
-                    "Skip ELD no-data #$audioNoDataPacketsDropped"
-                )
-            }
-            return
-        }
-
-        val decryptorSelector = audioFrameDecryptorSelector
-        if (decryptorSelector == null) {
-            if (audioPayloadsReceived == 0L) {
-                Logger.w(Logger.TAG_PROTOCOL, "Audio key=none")
-            }
-            audioPayloadsReceived++
-            return
-        }
-
-        audioPayloadsReceived++
-        if (currentAudioSyncState == null) {
-            audioPayloadsBeforeSync++
-            if (audioPayloadsBeforeSync <= 3L) {
-                Logger.w(
-                    Logger.TAG_PROTOCOL,
-                    "Audio pre-sync pkt#=$audioPayloadsReceived size=${data.size}"
-                )
-            }
-        }
-        val decryptResult = decryptorSelector.decrypt(data) { frame ->
-            audioAccessUnitExtractor.extract(audioConfig, frame).isNotEmpty()
-        }
-        val accessUnits = decryptResult.frame?.let { frame ->
-            audioAccessUnitExtractor.extract(audioConfig, frame)
-        }.orEmpty()
-        if (decryptResult.lockAcquired && decryptResult.lockedLabel != null) {
-            Logger.i(Logger.TAG_PROTOCOL, "Audio key=${decryptResult.lockedLabel}")
-        }
-        if (accessUnits.isEmpty()) {
-            audioInvalidFramesDropped++
-            if (
-                decryptResult.failReason != null &&
-                (audioInvalidFramesDropped <= 3L || audioInvalidFramesDropped % 25L == 0L)
-            ) {
-                Logger.w(
-                    Logger.TAG_PROTOCOL,
-                    "Audio fail reason=${decryptResult.failReason} count=$audioInvalidFramesDropped"
-                )
-            }
-            return
-        }
-
-        if (audioPayloadsReceived <= 3L) {
-            Logger.i(
-                Logger.TAG_PROTOCOL,
-                "Audio pkt#=$audioPayloadsReceived size=${data.size} au=${accessUnits.size} " +
-                    "ts=$timestamp codec=${audioConfig.codecLabel}"
-            )
-        }
-
-        accessUnits.forEachIndexed { index, accessUnit ->
-            audioAccessUnitsQueued++
-            val accessUnitTimestamp = timestamp + (index * audioConfig.samplesPerFrame.toLong())
-            val presentationTimeUs = (accessUnitTimestamp * 1_000_000L) / AUDIO_RTP_SAMPLE_RATE
-            if (audioAccessUnitsQueued <= 3L) {
-                Logger.i(
-                    Logger.TAG_PROTOCOL,
-                    "Queue AU#=$audioAccessUnitsQueued size=${accessUnit.size} " +
-                        "pts=$presentationTimeUs lock=${currentAudioSyncState != null}"
-                )
-            }
-            audioDecoder?.queueFrame(
-                data = accessUnit,
-                rtpTimestamp = accessUnitTimestamp,
-                presentationTimeUs = presentationTimeUs,
-                clockLocked = currentAudioSyncState != null,
-            )
-        }
-    }
-
-    private fun isAacEldNoDataPacket(config: AudioStreamConfig, payload: ByteArray): Boolean {
-        return config.compressionType == 8 &&
-            payload.size == AAC_ELD_NO_DATA_MARKER.size &&
-            payload.contentEquals(AAC_ELD_NO_DATA_MARKER)
+        audioPipeline.handlePayload(data, timestamp)
     }
 
 }

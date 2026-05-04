@@ -15,6 +15,7 @@ add_library(
     SHARED
     native-lib.cpp
     airplay_server.cpp
+    airplay_media_routes.cpp
     # Protocol modules
     protocol/protocol_constants.cpp
     protocol/fairplay_handler.cpp
