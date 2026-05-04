@@ -44,7 +44,9 @@ class AudioDecoder {
     
     data class AACFrame(
         val data: ByteArray,
-        val timestamp: Long
+        val rtpTimestamp: Long,
+        val presentationTimeUs: Long,
+        val clockLocked: Boolean,
     ) {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
@@ -53,14 +55,18 @@ class AudioDecoder {
             other as AACFrame
             
             if (!data.contentEquals(other.data)) return false
-            if (timestamp != other.timestamp) return false
+            if (rtpTimestamp != other.rtpTimestamp) return false
+            if (presentationTimeUs != other.presentationTimeUs) return false
+            if (clockLocked != other.clockLocked) return false
             
             return true
         }
         
         override fun hashCode(): Int {
             var result = data.contentHashCode()
-            result = 31 * result + timestamp.hashCode()
+            result = 31 * result + rtpTimestamp.hashCode()
+            result = 31 * result + presentationTimeUs.hashCode()
+            result = 31 * result + clockLocked.hashCode()
             return result
         }
     }
@@ -72,6 +78,10 @@ class AudioDecoder {
     // Configuração de áudio
     private var sampleRate = 44100
     private var channels = 2
+    private var lastRenderedPresentationTimeUs = 0L
+    private var hasSynchronizedClock = false
+    private var inputFramesQueued = 0L
+    private var firstRenderedBufferLogged = false
     
     /**
      * Configura decoder com parâmetros de áudio
@@ -86,10 +96,17 @@ class AudioDecoder {
         aacConfig: ByteBuffer
     ): Boolean {
         try {
-            Logger.i(Logger.TAG_AUDIO, "Configuring audio decoder: ${sampleRate}Hz ${channels}ch")
+            Logger.i(
+                Logger.TAG_AUDIO,
+                "Cfg mime=${Constants.AUDIO_CODEC_MIME} rate=${sampleRate} ch=$channels csd=${aacConfig.toCompactHex()}"
+            )
             
             this.sampleRate = sampleRate
             this.channels = channels
+            lastRenderedPresentationTimeUs = 0L
+            hasSynchronizedClock = false
+            inputFramesQueued = 0L
+            firstRenderedBufferLogged = false
             
             // Criar decoder AAC
             codec = MediaCodec.createDecoderByType(Constants.AUDIO_CODEC_MIME)
@@ -169,7 +186,7 @@ class AudioDecoder {
                 decoderLoop()
             }
             
-            Logger.i(Logger.TAG_AUDIO, "Audio decoder started")
+            Logger.i(Logger.TAG_AUDIO, "Start qCap=${inputQueue.remainingCapacity() + inputQueue.size}")
             
         } catch (e: Exception) {
             Logger.e(Logger.TAG_AUDIO, "Failed to start audio decoder", e)
@@ -208,7 +225,11 @@ class AudioDecoder {
         }
 
         inputQueue.clear()
-        
+        lastRenderedPresentationTimeUs = 0L
+        hasSynchronizedClock = false
+        inputFramesQueued = 0L
+        firstRenderedBufferLogged = false
+
         Logger.i(Logger.TAG_AUDIO, "Audio decoder stopped (decoded=$samplesDecoded, dropped=$samplesDropped)")
     }
     
@@ -216,15 +237,22 @@ class AudioDecoder {
      * Enfileira frame AAC para decodificação
      * 
      * @param data Payload AAC
-     * @param timestamp Timestamp RTP
+     * @param rtpTimestamp Timestamp RTP
      */
-    fun queueFrame(data: ByteArray, timestamp: Long) {
+    fun queueFrame(data: ByteArray, rtpTimestamp: Long, presentationTimeUs: Long, clockLocked: Boolean) {
         if (_state.value != DecoderState.Running) {
             return
         }
         
-        val frame = AACFrame(data, timestamp)
-        
+        val frame = AACFrame(data, rtpTimestamp, presentationTimeUs, clockLocked)
+        inputFramesQueued++
+        if (inputFramesQueued <= 3L) {
+            Logger.i(
+                Logger.TAG_AUDIO,
+                "In#$inputFramesQueued size=${data.size} ts=$rtpTimestamp pts=$presentationTimeUs lock=$clockLocked"
+            )
+        }
+
         if (!inputQueue.offer(frame)) {
             samplesDropped++
             Logger.w(Logger.TAG_AUDIO, "Input queue full, dropping frame (dropped=$samplesDropped)")
@@ -235,8 +263,6 @@ class AudioDecoder {
      * Loop principal de decodificação
      */
     private suspend fun decoderLoop() {
-        Logger.i(Logger.TAG_AUDIO, "Decoder loop started")
-        
         val timeoutUs = 10000L // 10ms
         
         while (currentCoroutineContext().isActive && _state.value == DecoderState.Running) {
@@ -266,7 +292,6 @@ class AudioDecoder {
             }
         }
         
-        Logger.i(Logger.TAG_AUDIO, "Decoder loop ended")
     }
     
     /**
@@ -294,18 +319,18 @@ class AudioDecoder {
             inputBuffer.clear()
             inputBuffer.put(frame.data)
             
-            // Converter timestamp RTP para microsegundos
-            // AAC usa mesma base de tempo que vídeo (90kHz)
-            val timestampUs = (frame.timestamp * 1000000L) / 90000L
-            
             // Enfileirar para decodificação
             codec.queueInputBuffer(
                 inputIndex,
                 0,
                 frame.data.size,
-                timestampUs,
+                frame.presentationTimeUs,
                 0
             )
+            if (!hasSynchronizedClock && frame.clockLocked) {
+                Logger.i(Logger.TAG_AUDIO, "Clock lock pts=${frame.presentationTimeUs}")
+            }
+            hasSynchronizedClock = hasSynchronizedClock || frame.clockLocked
         } else {
             samplesDropped++
         }
@@ -339,6 +364,14 @@ class AudioDecoder {
                         Logger.e(Logger.TAG_AUDIO, "AudioTrack write error: $written")
                     } else {
                         samplesDecoded += (written / 2).toLong() // 16-bit samples
+                        lastRenderedPresentationTimeUs = bufferInfo.presentationTimeUs
+                        if (!firstRenderedBufferLogged) {
+                            firstRenderedBufferLogged = true
+                            Logger.i(
+                                Logger.TAG_AUDIO,
+                                "First PCM bytes=$written pts=${bufferInfo.presentationTimeUs} dec=$samplesDecoded"
+                            )
+                        }
                     }
                 }
                 
@@ -365,10 +398,8 @@ class AudioDecoder {
         try {
             val track = audioTrack ?: return
             val params = track.playbackParams
-            if (params != null) {
-                track.playbackParams = params.setSpeed(rate)
-                Logger.d(Logger.TAG_AUDIO, "Playback rate adjusted to $rate")
-            }
+            track.playbackParams = params.setSpeed(rate)
+            Logger.d(Logger.TAG_AUDIO, "Playback rate adjusted to $rate")
         } catch (e: Exception) {
             Logger.e(Logger.TAG_AUDIO, "Failed to set playback rate", e)
         }
@@ -378,19 +409,12 @@ class AudioDecoder {
      * Obtém timestamp de reprodução atual (microsegundos)
      */
     fun getCurrentTimestampUs(): Long {
-        val audioTrack = this.audioTrack ?: return 0L
-        
-        return try {
-            val timestamp = android.media.AudioTimestamp()
-            if (audioTrack.getTimestamp(timestamp)) {
-                timestamp.nanoTime / 1000
-            } else {
-                0L
-            }
-        } catch (e: Exception) {
-            0L
-        }
+        return lastRenderedPresentationTimeUs
     }
+
+    fun getLastRenderedPresentationTimeUs(): Long = lastRenderedPresentationTimeUs
+
+    fun hasSynchronizedClock(): Boolean = hasSynchronizedClock
     
     /**
      * Obtém número de samples decodificados
@@ -408,5 +432,16 @@ class AudioDecoder {
     fun resetMetrics() {
         samplesDecoded = 0
         samplesDropped = 0
+        lastRenderedPresentationTimeUs = 0L
+        hasSynchronizedClock = false
+        inputFramesQueued = 0L
+        firstRenderedBufferLogged = false
+    }
+
+    private fun ByteBuffer.toCompactHex(): String {
+        val duplicate = duplicate()
+        val bytes = ByteArray(duplicate.remaining())
+        duplicate.get(bytes)
+        return bytes.joinToString(separator = "") { byte -> "%02x".format(byte) }
     }
 }

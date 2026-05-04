@@ -1,7 +1,7 @@
 package com.airplay.tv.ui.components
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -24,18 +24,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.airplay.tv.R
+import com.airplay.tv.ui.theme.SfCompactText
 
 internal val AirPlayBlue900 = Color(0xFF0A2E96)
 internal val AirPlayBlue700 = Color(0xFF244DDA)
@@ -57,32 +56,38 @@ fun AirPlayBackdrop(
     content: @Composable BoxScope.() -> Unit
 ) {
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                brush = Brush.linearGradient(
-                    colors = listOf(
-                        Color(0xFF103AA8),
-                        Color(0xFF1A37AF),
-                        Color(0xFF241E88)
-                    ),
-                    start = Offset.Zero,
-                    end = Offset(1600f, 900f)
-                )
-            )
+        modifier = Modifier.fillMaxSize()
     ) {
-        AmbientWaves(modifier = Modifier.fillMaxSize())
+        Image(
+            painter = painterResource(id = R.drawable.idle_background),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop
+        )
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color(0x12000000),
+                            Color(0x22000000)
+                        )
+                    )
+                )
+        )
 
         AirPlayBrandLockup(
             modifier = Modifier
                 .align(Alignment.TopStart)
-                .padding(start = 56.dp, top = 42.dp)
+                .padding(start = 62.dp, top = 46.dp)
         )
 
         Box(
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(end = 56.dp, top = 42.dp)
+                .padding(end = 60.dp, top = 50.dp)
         ) {
             topRightContent?.invoke()
         }
@@ -91,10 +96,12 @@ fun AirPlayBackdrop(
             text = "Desenvolvido por Gabriel Fachini",
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 16.dp),
-            color = AirPlayWhiteSoft.copy(alpha = 0.78f),
+                .padding(bottom = 18.dp),
+            color = AirPlayWhiteSoft.copy(alpha = 0.60f),
             style = MaterialTheme.typography.bodyLarge.copy(
-                fontWeight = FontWeight.Medium,
+                fontSize = 10.sp,
+                lineHeight = 10.sp,
+                fontWeight = FontWeight.Bold,
                 letterSpacing = 0.sp
             ),
             textAlign = TextAlign.Center
@@ -105,98 +112,11 @@ fun AirPlayBackdrop(
 }
 
 @Composable
-private fun AmbientWaves(modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier) {
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    Color(0x5538A2FF),
-                    Color.Transparent
-                ),
-                center = Offset(size.width * 0.24f, size.height * 0.42f),
-                radius = size.minDimension * 0.55f
-            ),
-            radius = size.minDimension * 0.55f,
-            center = Offset(size.width * 0.24f, size.height * 0.42f)
-        )
-
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    Color(0x558E58FF),
-                    Color.Transparent
-                ),
-                center = Offset(size.width * 0.58f, size.height * 0.86f),
-                radius = size.minDimension * 0.42f
-            ),
-            radius = size.minDimension * 0.42f,
-            center = Offset(size.width * 0.58f, size.height * 0.86f)
-        )
-
-        val backCurve = Path().apply {
-            moveTo(-size.width * 0.15f, size.height * 0.20f)
-            cubicTo(
-                size.width * 0.18f, size.height * 0.28f,
-                size.width * 0.34f, size.height * 0.70f,
-                size.width * 0.52f, size.height * 0.60f
-            )
-            cubicTo(
-                size.width * 0.68f, size.height * 0.48f,
-                size.width * 0.82f, size.height * 0.18f,
-                size.width * 1.08f, size.height * 0.02f
-            )
-        }
-        drawPath(
-            path = backCurve,
-            color = Color.White.copy(alpha = 0.12f),
-            style = Stroke(width = size.minDimension * 0.0038f, cap = StrokeCap.Round)
-        )
-
-        val frontCurve = Path().apply {
-            moveTo(-size.width * 0.08f, size.height * 0.72f)
-            cubicTo(
-                size.width * 0.16f, size.height * 0.55f,
-                size.width * 0.33f, size.height * 0.40f,
-                size.width * 0.46f, size.height * 0.58f
-            )
-            cubicTo(
-                size.width * 0.60f, size.height * 0.75f,
-                size.width * 0.70f, size.height * 0.88f,
-                size.width * 1.05f, size.height * 0.77f
-            )
-        }
-        drawPath(
-            path = frontCurve,
-            brush = Brush.linearGradient(
-                colors = listOf(
-                    Color.White.copy(alpha = 0.12f),
-                    AirPlayViolet.copy(alpha = 0.28f),
-                    AirPlayBlue300.copy(alpha = 0.16f)
-                )
-            ),
-            style = Stroke(width = size.minDimension * 0.024f, cap = StrokeCap.Round)
-        )
-
-        drawRoundRect(
-            brush = Brush.verticalGradient(
-                colors = listOf(
-                    Color.White.copy(alpha = 0.05f),
-                    Color.Transparent
-                )
-            ),
-            topLeft = Offset(size.width * 0.43f, size.height * 0.20f),
-            size = Size(size.width * 0.52f, size.height * 0.66f),
-            cornerRadius = androidx.compose.ui.geometry.CornerRadius(42f, 42f)
-        )
-    }
-}
-
-@Composable
 fun AirPlayBrandLockup(modifier: Modifier = Modifier) {
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp)
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         AirPlayGlyph()
 
@@ -205,16 +125,20 @@ fun AirPlayBrandLockup(modifier: Modifier = Modifier) {
                 text = "AirPlay",
                 color = Color.White,
                 style = MaterialTheme.typography.displayMedium.copy(
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = (-0.4).sp
+                    fontSize = 24.sp,
+                    lineHeight = 24.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = (-0.37).sp
                 )
             )
             Text(
                 text = "Espelhe sem fio seu\ndispositivo Apple",
-                color = AirPlayWhiteSoft,
+                color = Color.White.copy(alpha = 0.65f),
                 style = MaterialTheme.typography.titleMedium.copy(
+                    fontSize = 12.sp,
+                    lineHeight = 14.sp,
                     fontWeight = FontWeight.Normal,
-                    lineHeight = 20.sp
+                    letterSpacing = 0.sp
                 )
             )
         }
@@ -223,30 +147,16 @@ fun AirPlayBrandLockup(modifier: Modifier = Modifier) {
 
 @Composable
 private fun AirPlayGlyph() {
-    Box(modifier = Modifier.size(58.dp)) {
-        Box(
-            modifier = Modifier
-                .width(46.dp)
-                .height(32.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .border(BorderStroke(2.5.dp, Color.White.copy(alpha = 0.82f)), RoundedCornerShape(8.dp))
-                .align(Alignment.TopCenter)
+    Text(
+        text = String(Character.toChars(0x100461)),
+        color = Color(0xFFA3B6E6),
+        style = MaterialTheme.typography.displayMedium.copy(
+            fontFamily = SfCompactText,
+            fontSize = 38.sp,
+            lineHeight = 38.sp,
+            fontWeight = FontWeight.Normal
         )
-
-        Canvas(
-            modifier = Modifier
-                .size(26.dp)
-                .align(Alignment.BottomCenter)
-        ) {
-            val path = Path().apply {
-                moveTo(size.width / 2f, size.height * 0.08f)
-                lineTo(size.width * 0.95f, size.height * 0.82f)
-                lineTo(size.width * 0.05f, size.height * 0.82f)
-                close()
-            }
-            drawPath(path = path, color = Color.White.copy(alpha = 0.84f))
-        }
-    }
+    )
 }
 
 @Composable
@@ -266,20 +176,24 @@ fun AirPlayTopBadge(text: String, modifier: Modifier = Modifier) {
                 BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
                 RoundedCornerShape(999.dp)
             )
-            .padding(horizontal = 18.dp, vertical = 11.dp),
+            .padding(horizontal = 18.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Box(
             modifier = Modifier
-                .size(10.dp)
+                .size(12.dp)
                 .clip(CircleShape)
-                .background(AirPlayBlue300)
+                .background(Color(0xFF92C2FF))
         )
         Text(
             text = text,
             color = Color.White,
-            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Medium)
+            style = MaterialTheme.typography.titleMedium.copy(
+                fontSize = 12.sp,
+                lineHeight = 12.sp,
+                fontWeight = FontWeight.SemiBold
+            )
         )
     }
 }

@@ -21,6 +21,8 @@ class ProtocolHandler(
     private val videoDecoder: VideoDecoder? = null,
     private val audioDecoder: AudioDecoder? = null
 ) {
+    private val audioAccessUnitExtractor = AudioAccessUnitExtractor()
+
     enum class SessionKind {
         MIRRORING,
         PHOTO,
@@ -36,7 +38,26 @@ class ProtocolHandler(
         onCodecConfigReceived = { sps: ByteBuffer, pps: ByteBuffer, width: Int, height: Int ->
             // Emit codec config event
             _codecConfigReceived.tryEmit(CodecConfig(sps, pps, width, height))
-        }
+        },
+        onAudioCryptoConfigured = { config ->
+            audioFrameDecryptorSelector = config?.let { AudioFrameDecryptorSelector(it) }
+        },
+        onAudioStreamConfigured = { config ->
+            currentAudioStreamConfig = config
+            updateAudioSessionConfigNative(
+                config.compressionType,
+                config.samplesPerFrame,
+                config.audioFormat,
+                config.sampleRate,
+                config.channels,
+                config.remoteControlPort,
+                config.localDataPort,
+                config.localControlPort,
+                config.localTimingPort,
+                config.isMedia,
+                config.usingScreen,
+            )
+        },
     )
     
     // Estado da conexão
@@ -105,17 +126,35 @@ class ProtocolHandler(
         val videoWidth: Int,
         val videoHeight: Int,
         val audioSampleRate: Int,
-        val audioChannels: Int
+        val audioChannels: Int,
+        val audioStreamConfig: AudioStreamConfig,
+    )
+
+    private data class AudioSyncState(
+        val rtpSync: Long,
+        val remoteNtpUs: Long,
+        val localNtpUs: Long,
+        val initial: Boolean,
     )
     
     private var currentSession: SessionInfo? = null
+    private var currentAudioStreamConfig = AudioStreamConfig()
+    private var currentAudioSyncState: AudioSyncState? = null
+    private var audioFrameDecryptorSelector: AudioFrameDecryptorSelector? = null
     private var lastMediaImageData: ByteArray? = null
     private var lastMediaAssetKey: String? = null
     private var lastMediaTransition: String? = null
     private var audioPayloadsReceived = 0L
     private var audioAccessUnitsQueued = 0L
+    private var audioNoDataPacketsDropped = 0L
+    private var audioSyncEventsReceived = 0L
+    private var audioPayloadsBeforeSync = 0L
+    private var audioInvalidFramesDropped = 0L
     
     companion object {
+        const val AUDIO_RTP_SAMPLE_RATE = 44_100L
+        val AAC_ELD_NO_DATA_MARKER = byteArrayOf(0x00, 0x68, 0x34, 0x00)
+
         init {
             try {
                 System.loadLibrary("airplay-native")
@@ -136,6 +175,20 @@ class ProtocolHandler(
     private external fun getClientIpNative(): String
     private external fun getVideoResolutionNative(): IntArray
     private external fun getAudioConfigNative(): IntArray
+    private external fun updateAudioSessionConfigNative(
+        compressionType: Int,
+        samplesPerFrame: Int,
+        audioFormat: Long,
+        sampleRate: Int,
+        channels: Int,
+        remoteControlPort: Int,
+        localDataPort: Int,
+        localControlPort: Int,
+        localTimingPort: Int,
+        isMedia: Boolean,
+        usingScreen: Boolean,
+    )
+    private external fun resetAudioSessionConfigNative()
     
     /**
      * Inicia servidor RTSP
@@ -154,6 +207,16 @@ class ProtocolHandler(
             Logger.i(Logger.TAG_PROTOCOL, "RTSP server started successfully")
             _connectionState.value = ConnectionState.Idle
             rtpParser.resetStats()
+            currentAudioStreamConfig = AudioStreamConfig()
+            currentAudioSyncState = null
+            audioFrameDecryptorSelector = null
+            resetAudioSessionConfigNative()
+            audioPayloadsReceived = 0L
+            audioAccessUnitsQueued = 0L
+            audioNoDataPacketsDropped = 0L
+            audioSyncEventsReceived = 0L
+            audioPayloadsBeforeSync = 0L
+            audioInvalidFramesDropped = 0L
         } else {
             Logger.e(Logger.TAG_PROTOCOL, "Failed to start RTSP server")
             _connectionState.value = ConnectionState.Error("Failed to start server")
@@ -175,11 +238,21 @@ class ProtocolHandler(
         
         stopRTSPServerNative()
         currentSession = null
+        currentAudioStreamConfig = AudioStreamConfig()
+        currentAudioSyncState = null
+        audioFrameDecryptorSelector = null
         _mediaPlaybackState.value = MediaPlaybackState.Idle
         lastMediaImageData = null
         lastMediaAssetKey = null
         lastMediaTransition = null
+        audioPayloadsReceived = 0L
+        audioAccessUnitsQueued = 0L
+        audioNoDataPacketsDropped = 0L
+        audioSyncEventsReceived = 0L
+        audioPayloadsBeforeSync = 0L
+        audioInvalidFramesDropped = 0L
         _connectionState.value = ConnectionState.Idle
+        resetAudioSessionConfigNative()
         
         // Logar estatísticas finais
         rtpParser.logStats()
@@ -209,13 +282,24 @@ class ProtocolHandler(
         
         val videoRes = getVideoResolutionNative()
         val audioConfig = getAudioConfigNative()
+        val streamConfig = currentAudioStreamConfig.let { configured ->
+            if (configured.compressionType != 0 || configured.samplesPerFrame != 0) {
+                configured
+            } else {
+                configured.copy(
+                    sampleRate = audioConfig.getOrElse(0) { configured.sampleRate },
+                    channels = audioConfig.getOrElse(1) { configured.channels },
+                )
+            }
+        }
         
         return SessionInfo(
             clientIp = clientIp,
             videoWidth = videoRes[0],
             videoHeight = videoRes[1],
-            audioSampleRate = audioConfig[0],
-            audioChannels = audioConfig[1]
+            audioSampleRate = streamConfig.sampleRate,
+            audioChannels = streamConfig.channels,
+            audioStreamConfig = streamConfig,
         )
     }
     
@@ -237,7 +321,8 @@ class ProtocolHandler(
             
             Logger.i(Logger.TAG_PROTOCOL, 
                 "Session established: ${sessionInfo.videoWidth}x${sessionInfo.videoHeight}, " +
-                "${sessionInfo.audioSampleRate}Hz ${sessionInfo.audioChannels}ch")
+                "${sessionInfo.audioSampleRate}Hz ${sessionInfo.audioChannels}ch " +
+                "codec=${sessionInfo.audioStreamConfig.codecLabel}")
         }
     }
     
@@ -245,8 +330,12 @@ class ProtocolHandler(
     private fun onClientDisconnected() {
         Logger.i(Logger.TAG_PROTOCOL, "Client disconnected")
         currentSession = null
+        currentAudioStreamConfig = AudioStreamConfig()
+        currentAudioSyncState = null
+        audioFrameDecryptorSelector = null
         audioPayloadsReceived = 0L
         audioAccessUnitsQueued = 0L
+        audioInvalidFramesDropped = 0L
         _mediaPlaybackState.value = MediaPlaybackState.Idle
         lastMediaImageData = null
         lastMediaAssetKey = null
@@ -254,6 +343,7 @@ class ProtocolHandler(
         pairingManager.resetSession()
         mirroringSession.reset()
         _connectionState.value = ConnectionState.Idle
+        resetAudioSessionConfigNative()
         
         // Logar estatísticas da sessão
         rtpParser.logStats()
@@ -264,6 +354,9 @@ class ProtocolHandler(
         Logger.e(Logger.TAG_PROTOCOL, "Protocol error: $error")
         audioPayloadsReceived = 0L
         audioAccessUnitsQueued = 0L
+        currentAudioStreamConfig = AudioStreamConfig()
+        currentAudioSyncState = null
+        audioFrameDecryptorSelector = null
         _mediaPlaybackState.value = MediaPlaybackState.Idle
         lastMediaImageData = null
         lastMediaAssetKey = null
@@ -271,6 +364,8 @@ class ProtocolHandler(
         pairingManager.resetSession()
         mirroringSession.reset()
         _connectionState.value = ConnectionState.Error(error)
+        resetAudioSessionConfigNative()
+        audioInvalidFramesDropped = 0L
     }
 
     @Suppress("unused")
@@ -306,6 +401,24 @@ class ProtocolHandler(
     @Suppress("unused")
     private fun onSetupRequest(data: ByteArray): ByteArray? {
         return mirroringSession.buildSetupResponse(data)
+    }
+
+    @Suppress("unused")
+    private fun onAudioSync(rtpSync: Long, remoteNtpUs: Long, localNtpUs: Long, initial: Boolean) {
+        audioSyncEventsReceived++
+        currentAudioSyncState = AudioSyncState(
+            rtpSync = rtpSync,
+            remoteNtpUs = remoteNtpUs,
+            localNtpUs = localNtpUs,
+            initial = initial,
+        )
+        if (initial || audioSyncEventsReceived <= 3L || audioSyncEventsReceived % 25L == 0L) {
+            Logger.i(
+                Logger.TAG_PROTOCOL,
+                "Audio sync#$audioSyncEventsReceived initial=$initial rtpSync=$rtpSync " +
+                    "remoteNtpUs=$remoteNtpUs localNtpUs=$localNtpUs queuedAUs=$audioAccessUnitsQueued"
+            )
+        }
     }
 
     /**
@@ -418,7 +531,7 @@ class ProtocolHandler(
      * @param timestamp Timestamp RTP (90kHz)
      */
     @Suppress("unused")
-    private fun onVideoData(data: ByteArray, timestamp: Long) {
+    private fun onVideoData(data: ByteArray, @Suppress("UNUSED_PARAMETER") timestamp: Long) {
         _sessionActivity.tryEmit("VIDEO")
         // Parsear pacote RTP
         val packet = rtpParser.parsePacket(data, data.size)
@@ -442,90 +555,105 @@ class ProtocolHandler(
     private fun onAudioData(data: ByteArray, timestamp: Long) {
         _sessionActivity.tryEmit("AUDIO")
 
-        audioPayloadsReceived++
-        val accessUnits = extractAacAccessUnits(data)
-        if (audioPayloadsReceived <= 3L || accessUnits.isEmpty()) {
-            Logger.i(
-                Logger.TAG_PROTOCOL,
-                "Audio payload received: payload#=$audioPayloadsReceived bytes=${data.size} accessUnits=${accessUnits.size}"
-            )
-        }
-
-        if (accessUnits.isEmpty()) {
+        val audioConfig = currentAudioStreamConfig
+        if (!audioConfig.isSupportedAac) {
+            if (audioPayloadsReceived == 0L) {
+                Logger.w(
+                    Logger.TAG_PROTOCOL,
+                    "Dropping audio payloads: negotiated codec unsupported " +
+                        "codec=${audioConfig.codecLabel} ct=${audioConfig.compressionType} " +
+                        "fmt=0x${audioConfig.audioFormat.toString(16)}"
+                )
+            }
+            audioPayloadsReceived++
             return
         }
 
-        accessUnits.forEach { accessUnit ->
+        if (isAacEldNoDataPacket(audioConfig, data)) {
+            audioNoDataPacketsDropped++
+            if (audioNoDataPacketsDropped <= 3L) {
+                Logger.d(
+                    Logger.TAG_PROTOCOL,
+                    "Skip ELD no-data #$audioNoDataPacketsDropped"
+                )
+            }
+            return
+        }
+
+        val decryptorSelector = audioFrameDecryptorSelector
+        if (decryptorSelector == null) {
+            if (audioPayloadsReceived == 0L) {
+                Logger.w(Logger.TAG_PROTOCOL, "Audio key=none")
+            }
+            audioPayloadsReceived++
+            return
+        }
+
+        audioPayloadsReceived++
+        if (currentAudioSyncState == null) {
+            audioPayloadsBeforeSync++
+            if (audioPayloadsBeforeSync <= 3L) {
+                Logger.w(
+                    Logger.TAG_PROTOCOL,
+                    "Audio pre-sync pkt#=$audioPayloadsReceived size=${data.size}"
+                )
+            }
+        }
+        val decryptResult = decryptorSelector.decrypt(data) { frame ->
+            audioAccessUnitExtractor.extract(audioConfig, frame).isNotEmpty()
+        }
+        val accessUnits = decryptResult.frame?.let { frame ->
+            audioAccessUnitExtractor.extract(audioConfig, frame)
+        }.orEmpty()
+        if (decryptResult.lockAcquired && decryptResult.lockedLabel != null) {
+            Logger.i(Logger.TAG_PROTOCOL, "Audio key=${decryptResult.lockedLabel}")
+        }
+        if (accessUnits.isEmpty()) {
+            audioInvalidFramesDropped++
+            if (
+                decryptResult.failReason != null &&
+                (audioInvalidFramesDropped <= 3L || audioInvalidFramesDropped % 25L == 0L)
+            ) {
+                Logger.w(
+                    Logger.TAG_PROTOCOL,
+                    "Audio fail reason=${decryptResult.failReason} count=$audioInvalidFramesDropped"
+                )
+            }
+            return
+        }
+
+        if (audioPayloadsReceived <= 3L) {
+            Logger.i(
+                Logger.TAG_PROTOCOL,
+                "Audio pkt#=$audioPayloadsReceived size=${data.size} au=${accessUnits.size} " +
+                    "ts=$timestamp codec=${audioConfig.codecLabel}"
+            )
+        }
+
+        accessUnits.forEachIndexed { index, accessUnit ->
             audioAccessUnitsQueued++
+            val accessUnitTimestamp = timestamp + (index * audioConfig.samplesPerFrame.toLong())
+            val presentationTimeUs = (accessUnitTimestamp * 1_000_000L) / AUDIO_RTP_SAMPLE_RATE
             if (audioAccessUnitsQueued <= 3L) {
                 Logger.i(
                     Logger.TAG_PROTOCOL,
-                    "Queueing AAC access unit #$audioAccessUnitsQueued (${accessUnit.size} bytes)"
+                    "Queue AU#=$audioAccessUnitsQueued size=${accessUnit.size} " +
+                        "pts=$presentationTimeUs lock=${currentAudioSyncState != null}"
                 )
             }
             audioDecoder?.queueFrame(
                 data = accessUnit,
-                timestamp = timestamp
+                rtpTimestamp = accessUnitTimestamp,
+                presentationTimeUs = presentationTimeUs,
+                clockLocked = currentAudioSyncState != null,
             )
         }
     }
 
-    private fun extractAacAccessUnits(payload: ByteArray): List<ByteArray> {
-        if (payload.size < 4) {
-            Logger.w(Logger.TAG_PROTOCOL, "AAC payload too small: ${payload.size} bytes")
-            return emptyList()
-        }
-
-        val auHeadersLengthBits = ((payload[0].toInt() and 0xFF) shl 8) or
-            (payload[1].toInt() and 0xFF)
-        if (auHeadersLengthBits <= 0) {
-            Logger.w(Logger.TAG_PROTOCOL, "AAC payload missing AU headers: ${payload.size} bytes")
-            return emptyList()
-        }
-
-        val auHeadersLengthBytes = (auHeadersLengthBits + 7) / 8
-        val headersStart = 2
-        val dataStart = headersStart + auHeadersLengthBytes
-        if (payload.size < dataStart) {
-            Logger.w(
-                Logger.TAG_PROTOCOL,
-                "AAC payload truncated before AU data: payload=${payload.size} headersBytes=$auHeadersLengthBytes"
-            )
-            return emptyList()
-        }
-
-        val accessUnits = mutableListOf<ByteArray>()
-        var headerOffset = headersStart
-        var dataOffset = dataStart
-        val headerCount = auHeadersLengthBits / 16
-
-        repeat(headerCount) {
-            if (headerOffset + 1 >= dataStart) {
-                Logger.w(Logger.TAG_PROTOCOL, "AAC AU header truncated at index=$it")
-                return accessUnits
-            }
-
-            val auHeader = ((payload[headerOffset].toInt() and 0xFF) shl 8) or
-                (payload[headerOffset + 1].toInt() and 0xFF)
-            val accessUnitSize = (auHeader shr 3) and 0x1FFF
-            headerOffset += 2
-
-            if (accessUnitSize <= 0) {
-                Logger.w(Logger.TAG_PROTOCOL, "AAC AU header with invalid size=$accessUnitSize")
-                return@repeat
-            }
-            if (dataOffset + accessUnitSize > payload.size) {
-                Logger.w(
-                    Logger.TAG_PROTOCOL,
-                    "AAC access unit exceeds payload: size=$accessUnitSize remaining=${payload.size - dataOffset}"
-                )
-                return accessUnits
-            }
-
-            accessUnits += payload.copyOfRange(dataOffset, dataOffset + accessUnitSize)
-            dataOffset += accessUnitSize
-        }
-
-        return accessUnits
+    private fun isAacEldNoDataPacket(config: AudioStreamConfig, payload: ByteArray): Boolean {
+        return config.compressionType == 8 &&
+            payload.size == AAC_ELD_NO_DATA_MARKER.size &&
+            payload.contentEquals(AAC_ELD_NO_DATA_MARKER)
     }
+
 }

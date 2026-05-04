@@ -111,9 +111,13 @@ class SyncManager(
      * Verifica e ajusta sincronização A/V
      */
     private fun checkSync() {
+        if (!audioDecoder.hasSynchronizedClock()) {
+            return
+        }
+
         // Obter timestamps atuais
-        val videoTs = videoTimestampUs
-        val audioTs = audioDecoder.getCurrentTimestampUs()
+        val videoTs = videoDecoder.getLastRenderedPresentationTimeUs()
+        val audioTs = audioDecoder.getLastRenderedPresentationTimeUs()
         
         if (videoTs == 0L || audioTs == 0L) {
             // Ainda não temos timestamps válidos

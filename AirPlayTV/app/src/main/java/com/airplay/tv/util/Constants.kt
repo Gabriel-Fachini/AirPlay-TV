@@ -11,7 +11,9 @@ object Constants {
     
     // Protocol
     const val AIRPLAY_MODEL = "AppleTV3,2"
-    const val AIRPLAY_FEATURES = "0x427FFFE2,0x1E"  // Sem Video/VideoFairPlay/VideoVolumeControl/HLS ate o suporte HTTP de video existir
+    // Align with UxPlay default feature mask. Most important here: bit 27
+    // (Supports Legacy Pairing) stays ON, which affects audio key negotiation.
+    const val AIRPLAY_FEATURES = "0x5A7FFEE6,0x0"
     const val AIRPLAY_SRC_VERSION = "220.68"
     const val AIRPLAY_VERSION = "2"
     

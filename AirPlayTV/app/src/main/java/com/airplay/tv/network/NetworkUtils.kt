@@ -47,7 +47,7 @@ object NetworkUtils {
                     // Filtrar apenas IPv4
                     if (address is Inet4Address && !address.isLoopbackAddress) {
                         val ip = address.hostAddress
-                        Logger.d(Logger.TAG_MDNS, "Found local IP: $ip on ${networkInterface.name}")
+                        Logger.d(Logger.TAG_MDNS, "IP=$ip if=${networkInterface.name}")
                         return ip
                     }
                 }

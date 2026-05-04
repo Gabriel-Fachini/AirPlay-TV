@@ -161,6 +161,7 @@ AirPlayServer::AirPlayServer()
     , fairplayHandler_(std::make_unique<FairPlayHandler>())
 {
     LOGI("AirPlayServer created");
+    resetAudioSessionConfig();
 }
 
 AirPlayServer::~AirPlayServer() {
@@ -265,6 +266,7 @@ void AirPlayServer::serverThread() {
         sessionAnnounced_ = false;
         mediaSessionAnnounced_ = false;
         resetMediaPlaybackState();
+        resetAudioSessionConfig();
         LOGI("Client connected from %s", clientIp_.c_str());
 
         handleClient(clientSocket);
@@ -789,16 +791,35 @@ void AirPlayServer::startRTPReceiver() {
     // Setup callbacks
     rtpReceiver_->setVideoDataCallback(onVideoData_);
     rtpReceiver_->setAudioDataCallback(onAudioData_);
+    rtpReceiver_->setAudioSyncCallback(onAudioSync_);
     rtpReceiver_->setErrorCallback(onError_);
+    rtpReceiver_->setAudioConfig(audioSessionConfig_.compressionType, audioSessionConfig_.sampleRate);
 
-    // Start receiver (hardcoded ports for now)
-    if (rtpReceiver_->start(7100, 6001, 7002)) {
+    if (rtpReceiver_->start(
+            audioSessionConfig_.localDataPort,
+            audioSessionConfig_.localControlPort,
+            audioSessionConfig_.localTimingPort)) {
         rtpRunning_ = true;
         LOGI("RTP receiver started successfully");
     } else {
         LOGE("Failed to start RTP receiver");
         rtpReceiver_.reset();
     }
+}
+
+void AirPlayServer::updateAudioSessionConfig(const AudioSessionConfig& config) {
+    audioSessionConfig_ = config;
+    audioSampleRate_ = config.sampleRate;
+    audioChannels_ = config.channels;
+    if (rtpReceiver_) {
+        rtpReceiver_->setAudioConfig(audioSessionConfig_.compressionType, audioSessionConfig_.sampleRate);
+    }
+}
+
+void AirPlayServer::resetAudioSessionConfig() {
+    audioSessionConfig_ = AudioSessionConfig();
+    audioSampleRate_ = audioSessionConfig_.sampleRate;
+    audioChannels_ = audioSessionConfig_.channels;
 }
 
 void AirPlayServer::stopRTPReceiver() {

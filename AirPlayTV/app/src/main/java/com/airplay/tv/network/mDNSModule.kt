@@ -53,8 +53,7 @@ class mDNSModule(private val context: Context) {
             unregisterService()
         }
         
-        Logger.i(Logger.TAG_MDNS, "Registering mDNS service: $deviceName on port $port")
-        Logger.d(Logger.TAG_MDNS, "Device ID: ${generateDeviceId()}")
+        Logger.i(Logger.TAG_MDNS, "Register name=$deviceName port=$port")
         _serviceState.value = ServiceState.Registering
         
         // Configurar NsdServiceInfo
@@ -79,13 +78,10 @@ class mDNSModule(private val context: Context) {
             setAttribute("psi", "00000000-0000-0000-0000-000000000000")  // Protocol State Info
             setAttribute("gid", "00000000-0000-0000-0000-000000000000")  // Group ID
             
-            Logger.i(Logger.TAG_MDNS, "TXT records configured:")
-            Logger.i(Logger.TAG_MDNS, "  model=${Constants.AIRPLAY_MODEL}")
-            Logger.i(Logger.TAG_MDNS, "  features=${Constants.AIRPLAY_FEATURES}")
-            Logger.i(Logger.TAG_MDNS, "  srcvers=${Constants.AIRPLAY_SRC_VERSION}")
-            Logger.i(Logger.TAG_MDNS, "  vv=${Constants.AIRPLAY_VERSION}")
-            Logger.i(Logger.TAG_MDNS, "  deviceid=$deviceId")
-            Logger.i(Logger.TAG_MDNS, "  flags=0x4")
+            Logger.d(
+                Logger.TAG_MDNS,
+                "TXT model=${Constants.AIRPLAY_MODEL} feat=${Constants.AIRPLAY_FEATURES} id=$deviceId"
+            )
         }
         
         // Criar listener de registro
@@ -105,7 +101,7 @@ class mDNSModule(private val context: Context) {
             
             override fun onServiceRegistered(serviceInfo: NsdServiceInfo?) {
                 val registeredName = serviceInfo?.serviceName ?: deviceName
-                Logger.i(Logger.TAG_MDNS, "Service registered successfully: $registeredName")
+                Logger.i(Logger.TAG_MDNS, "Registered name=$registeredName")
                 _serviceState.value = ServiceState.Registered(registeredName)
             }
             

@@ -29,8 +29,11 @@ class AirPlayMirroringSession(
     private val decryptFairPlayAesKey: (ByteArray) -> ByteArray?,
     private val startMirrorVideoServer: () -> Int,
     private val onCodecConfigReceived: (sps: ByteBuffer, pps: ByteBuffer, width: Int, height: Int) -> Unit,
+    private val onAudioCryptoConfigured: (AudioCryptoConfig?) -> Unit,
+    private val onAudioStreamConfigured: (AudioStreamConfig) -> Unit,
 ) {
     private var videoMasterKey: ByteArray? = null
+    private var audioAesIv: ByteArray? = null
     private var decryptor: VideoStreamDecryptor? = null
     private var cachedCodecPrefix: ByteArray? = null
     private var shouldPrependCodecPrefix = false
@@ -38,10 +41,12 @@ class AirPlayMirroringSession(
 
     fun reset() {
         videoMasterKey = null
+        audioAesIv = null
         decryptor = null
         cachedCodecPrefix = null
         shouldPrependCodecPrefix = false
         mirroredVideoFramesQueued = 0
+        onAudioCryptoConfigured(null)
     }
 
     fun buildSetupResponse(requestBody: ByteArray): ByteArray? {
@@ -169,8 +174,13 @@ class AirPlayMirroringSession(
 
     private fun buildInitialSetupResponse(root: NSDictionary): ByteArray? {
         val encryptedKey = (root.objectForKey("ekey") as? NSData)?.bytes()
+        val encryptedIv = (root.objectForKey("eiv") as? NSData)?.bytes()
         if (encryptedKey == null || encryptedKey.size != ENCRYPTED_AES_KEY_SIZE) {
             Logger.e(Logger.TAG_PROTOCOL, "SETUP 1 missing valid ekey")
+            return null
+        }
+        if (encryptedIv == null || encryptedIv.size != AES_BLOCK_SIZE) {
+            Logger.e(Logger.TAG_PROTOCOL, "SETUP 1 missing valid eiv")
             return null
         }
 
@@ -179,13 +189,28 @@ class AirPlayMirroringSession(
             Logger.e(Logger.TAG_PROTOCOL, "Failed to decrypt FairPlay AES key from SETUP 1")
             return null
         }
+        audioAesIv = encryptedIv.copyOf()
+
+        val sharedSecret = pairingManager.getSharedSecret()
+        onAudioCryptoConfigured(
+            AudioCryptoConfig(
+                plainAesKey = videoMasterKey!!.copyOf(AES_BLOCK_SIZE),
+                hashedAesKey = sharedSecret?.let {
+                    MessageDigest.getInstance("SHA-256")
+                        .digest(videoMasterKey!!.copyOf(AES_BLOCK_SIZE) + it)
+                        .copyOf(AES_BLOCK_SIZE)
+                },
+                aesIv = encryptedIv.copyOf(),
+                preferHashed = sharedSecret != null,
+            )
+        )
 
         val response = NSDictionary().apply {
             put("eventPort", NSNumber(Constants.RTSP_PORT.toLong()))
             put("timingPort", NSNumber(TIMING_PORT.toLong()))
         }
 
-        Logger.i(Logger.TAG_PROTOCOL, "SETUP 1 accepted: mirror master key ready")
+        Logger.i(Logger.TAG_PROTOCOL, "SETUP 1 ok")
         return BinaryPropertyListWriter.writeToArray(response)
     }
 
@@ -237,6 +262,20 @@ class AirPlayMirroringSession(
                 }
 
                 AUDIO_STREAM_TYPE -> {
+                    val audioConfig = AudioStreamConfig(
+                        compressionType = (stream.objectForKey("ct") as? NSNumber)?.intValue() ?: 0,
+                        samplesPerFrame = (stream.objectForKey("spf") as? NSNumber)?.intValue() ?: 0,
+                        audioFormat = (stream.objectForKey("audioFormat") as? NSNumber)?.longValue() ?: 0L,
+                        sampleRate = AUDIO_SAMPLE_RATE,
+                        channels = DEFAULT_AUDIO_CHANNELS,
+                        remoteControlPort = (stream.objectForKey("controlPort") as? NSNumber)?.intValue() ?: 0,
+                        localDataPort = LEGACY_AUDIO_DATA_PORT,
+                        localControlPort = LEGACY_AUDIO_CONTROL_PORT,
+                        localTimingPort = TIMING_PORT,
+                        isMedia = (stream.objectForKey("isMedia") as? NSNumber)?.boolValue() ?: false,
+                        usingScreen = (stream.objectForKey("usingScreen") as? NSNumber)?.boolValue() ?: false,
+                    )
+                    onAudioStreamConfigured(audioConfig)
                     responseStreams.add(
                         NSDictionary().apply {
                             put("dataPort", NSNumber(LEGACY_AUDIO_DATA_PORT.toLong()))
@@ -244,7 +283,13 @@ class AirPlayMirroringSession(
                             put("type", NSNumber(AUDIO_STREAM_TYPE.toLong()))
                         }
                     )
-                    Logger.i(Logger.TAG_PROTOCOL, "SETUP audio stream acknowledged with legacy RTP ports")
+                    Logger.i(
+                        Logger.TAG_PROTOCOL,
+                        "SETUP audio codec=${audioConfig.codecLabel} ct=${audioConfig.compressionType} " +
+                            "spf=${audioConfig.samplesPerFrame} fmt=0x${audioConfig.audioFormat.toString(16)} " +
+                            "rCtrl=${audioConfig.remoteControlPort} lData=${audioConfig.localDataPort} " +
+                            "lCtrl=${audioConfig.localControlPort} ok=${audioConfig.isSupportedAac}"
+                    )
                 }
 
                 else -> {
@@ -571,9 +616,18 @@ class AirPlayMirroringSession(
         const val ENCRYPTED_AES_KEY_SIZE = 72
         const val MIRROR_STREAM_TYPE = 110
         const val AUDIO_STREAM_TYPE = 96
+        const val AUDIO_SAMPLE_RATE = 44_100
+        const val DEFAULT_AUDIO_CHANNELS = 2
         const val TIMING_PORT = 7002
         const val LEGACY_AUDIO_DATA_PORT = 7100
         const val LEGACY_AUDIO_CONTROL_PORT = 6001
         val ANNEX_B_START_CODE = byteArrayOf(0x00, 0x00, 0x00, 0x01)
     }
 }
+
+data class AudioCryptoConfig(
+    val plainAesKey: ByteArray,
+    val hashedAesKey: ByteArray?,
+    val aesIv: ByteArray,
+    val preferHashed: Boolean,
+)

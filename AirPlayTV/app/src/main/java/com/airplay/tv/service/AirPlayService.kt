@@ -384,43 +384,54 @@ class AirPlayService : Service() {
             // This happens via handleCodecConfigReceived() when type 1 packet arrives
             Logger.i(Logger.TAG_SERVICE, "Waiting for codec config to configure video decoder")
             
-            // Configurar audio decoder
-            // TODO: Obter AudioSpecificConfig real do handshake RTSP
-            // Por enquanto, usar buffer vazio (será configurado quando receber primeiro frame)
-            val aacConfig = ByteBuffer.allocate(0)
-            
-            val audioSuccess = audioDecoder.configure(
-                sampleRate = sessionInfo.audioSampleRate,
-                channels = sessionInfo.audioChannels,
-                aacConfig = aacConfig
-            )
-            
-            if (!audioSuccess) {
-                Logger.e(Logger.TAG_SERVICE, "Failed to configure audio decoder")
-                return
-            }
-            
-            // Iniciar audio decoder
-            try {
-                audioDecoder.start()
-            } catch (e: Exception) {
-                Logger.e(Logger.TAG_SERVICE, "Failed to start audio decoder", e)
+            val audioStreamConfig = sessionInfo.audioStreamConfig
+            if (audioStreamConfig.isSupportedAac) {
+                val aacConfig = audioStreamConfig.buildCodecSpecificData()
+                if (aacConfig == null) {
+                    Logger.e(
+                        Logger.TAG_SERVICE,
+                        "Negotiated AAC codec ${audioStreamConfig.codecLabel} but codec specific data was unavailable"
+                    )
+                    return
+                }
+
+                val audioSuccess = audioDecoder.configure(
+                    sampleRate = sessionInfo.audioSampleRate,
+                    channels = sessionInfo.audioChannels,
+                    aacConfig = aacConfig
+                )
+
+                if (!audioSuccess) {
+                    Logger.e(Logger.TAG_SERVICE, "Failed to configure audio decoder")
+                    return
+                }
+
                 try {
-                    audioDecoder.stop()
-                } catch (cleanupError: Exception) {
-                    Logger.e(Logger.TAG_SERVICE, "Error stopping audio decoder during cleanup", cleanupError)
+                    audioDecoder.start()
+                } catch (e: Exception) {
+                    Logger.e(Logger.TAG_SERVICE, "Failed to start audio decoder", e)
+                    try {
+                        audioDecoder.stop()
+                    } catch (cleanupError: Exception) {
+                        Logger.e(Logger.TAG_SERVICE, "Error stopping audio decoder during cleanup", cleanupError)
+                    }
+                    return
                 }
-                return
-            }
-            
-            // Iniciar sync manager
-            try {
-                syncManager = SyncManager(videoDecoder, audioDecoder).also {
-                    it.start()
+
+                try {
+                    syncManager = SyncManager(videoDecoder, audioDecoder).also {
+                        it.start()
+                    }
+                } catch (e: Exception) {
+                    Logger.e(Logger.TAG_SERVICE, "Failed to start sync manager", e)
+                    // Continuar sem sync (não é crítico)
+                    syncManager = null
                 }
-            } catch (e: Exception) {
-                Logger.e(Logger.TAG_SERVICE, "Failed to start sync manager", e)
-                // Continuar sem sync (não é crítico)
+            } else {
+                Logger.w(
+                    Logger.TAG_SERVICE,
+                    "Audio codec unsupported for current session: ${audioStreamConfig.codecLabel}. Video will continue without audio."
+                )
                 syncManager = null
             }
             

@@ -6,14 +6,15 @@ import android.util.Log
  * Sistema de logging centralizado com tags por componente
  */
 object Logger {
-    // Tags por componente
-    const val TAG_MDNS = "AirPlay:mDNS"
-    const val TAG_PROTOCOL = "AirPlay:Protocol"
-    const val TAG_VIDEO = "AirPlay:Video"
-    const val TAG_AUDIO = "AirPlay:Audio"
-    const val TAG_SESSION = "AirPlay:Session"
-    const val TAG_UI = "AirPlay:UI"
-    const val TAG_SERVICE = "AirPlay:Service"
+    // Evita ':' nas tags porque `adb logcat -s <tag>` interpreta ':' como separador
+    // de prioridade e quebra o filtro justamente quando precisamos isolar o áudio.
+    const val TAG_MDNS = "AirPlayMDNS"
+    const val TAG_PROTOCOL = "AirPlayProtocol"
+    const val TAG_VIDEO = "AirPlayVideo"
+    const val TAG_AUDIO = "AirPlayAudio"
+    const val TAG_SESSION = "AirPlaySession"
+    const val TAG_UI = "AirPlayUI"
+    const val TAG_SERVICE = "AirPlayService"
     
     // Debug
     fun d(tag: String, message: String) {

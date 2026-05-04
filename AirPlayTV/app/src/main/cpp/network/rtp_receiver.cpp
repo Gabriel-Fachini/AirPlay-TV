@@ -7,8 +7,9 @@
 #include <unistd.h>
 #include <cstring>
 #include <cerrno>
+#include <chrono>
 
-#define TAG "AirPlay:RTP"
+#define TAG "AirPlayRTP"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
@@ -18,7 +19,17 @@ RTPReceiver::RTPReceiver()
     , controlSocket_(-1)
     , timingSocket_(-1)
     , running_(false)
+    , hasReceivedAudioSync_(false)
+    , compressionType_(0)
+    , sampleRate_(44100)
+    , audioBufferEmpty_(true)
+    , firstAudioSequence_(0)
+    , lastAudioSequence_(0)
+    , bufferedAudioPackets_(0)
+    , duplicateAudioPackets_(0)
+    , droppedAudioPackets_(0)
 {
+    resetAudioPacketBuffer();
     LOGI("RTPReceiver created");
 }
 
@@ -48,6 +59,9 @@ bool RTPReceiver::start(int dataPort, int controlPort, int timingPort) {
         LOGW("RTP receiver already running");
         return false;
     }
+
+    hasReceivedAudioSync_ = false;
+    resetAudioPacketBuffer();
 
     LOGI("Starting RTP receiver (data=%d, control=%d, timing=%d)", 
          dataPort, controlPort, timingPort);
@@ -169,7 +183,19 @@ void RTPReceiver::stop() {
         timingThread_.join();
     }
 
+    if (bufferedAudioPackets_ > 0 || duplicateAudioPackets_ > 0 || droppedAudioPackets_ > 0) {
+        LOGI("Audio buf valid=%llu dup=%llu drop=%llu",
+             (unsigned long long)bufferedAudioPackets_,
+             (unsigned long long)duplicateAudioPackets_,
+             (unsigned long long)droppedAudioPackets_);
+    }
+
     LOGI("RTP receiver stopped");
+}
+
+void RTPReceiver::setAudioConfig(int compressionType, int sampleRate) {
+    compressionType_ = compressionType;
+    sampleRate_ = sampleRate > 0 ? sampleRate : 44100;
 }
 
 void RTPReceiver::receiveDataThread() {
@@ -246,6 +272,33 @@ void RTPReceiver::receiveControlThread() {
                      bytesRead);
                 firstPacket = false;
             }
+
+            const uint8_t packetType = buffer[1] & 0x7F;
+            if (packetType == 0x54 && bytesRead >= 20 && onAudioSync_) {
+                const bool initial = !hasReceivedAudioSync_;
+                hasReceivedAudioSync_ = true;
+
+                const uint32_t rtpSync =
+                    (static_cast<uint32_t>(buffer[4]) << 24) |
+                    (static_cast<uint32_t>(buffer[5]) << 16) |
+                    (static_cast<uint32_t>(buffer[6]) << 8) |
+                    static_cast<uint32_t>(buffer[7]);
+                const uint64_t remoteNtpRaw =
+                    (static_cast<uint64_t>(buffer[8]) << 56) |
+                    (static_cast<uint64_t>(buffer[9]) << 48) |
+                    (static_cast<uint64_t>(buffer[10]) << 40) |
+                    (static_cast<uint64_t>(buffer[11]) << 32) |
+                    (static_cast<uint64_t>(buffer[12]) << 24) |
+                    (static_cast<uint64_t>(buffer[13]) << 16) |
+                    (static_cast<uint64_t>(buffer[14]) << 8) |
+                    static_cast<uint64_t>(buffer[15]);
+
+                onAudioSync_(
+                    rtpSync,
+                    convertNtpToUnixMicros(remoteNtpRaw),
+                    getCurrentUnixMicros(),
+                    initial);
+            }
         }
     }
 
@@ -302,11 +355,13 @@ void RTPReceiver::processRTPPacket(const uint8_t* data, size_t size) {
     uint8_t padding = (data[0] >> 5) & 0x01;
     uint8_t extension = (data[0] >> 4) & 0x01;
     uint8_t csrcCount = data[0] & 0x0F;
-    uint8_t marker = (data[1] >> 7) & 0x01;
-    uint8_t payloadType = data[1] & 0x7F;
     uint16_t sequenceNumber = (data[2] << 8) | data[3];
     uint32_t timestamp = (data[4] << 24) | (data[5] << 16) | (data[6] << 8) | data[7];
-    uint32_t ssrc = (data[8] << 24) | (data[9] << 16) | (data[10] << 8) | data[11];
+
+    if (version != 2) {
+        droppedAudioPackets_++;
+        return;
+    }
 
     // Calculate payload offset
     size_t headerSize = 12 + (csrcCount * 4);
@@ -336,11 +391,133 @@ void RTPReceiver::processRTPPacket(const uint8_t* data, size_t size) {
         }
     }
 
-    // In this MVP mirroring flow, H.264 video arrives over the dedicated mirror TCP
-    // channel. UDP RTP packets handled here are for the auxiliary audio stream.
-    // Routing them as video based on payload type/size heuristics breaks iPhone
-    // gallery video playback because AAC can be misclassified.
-    if (onAudioData_) {
-        onAudioData_(payload, payloadSize, timestamp);
+    if (payloadSize == 0) {
+        return;
     }
+
+    if (compressionType_ == 8 &&
+        payloadSize == 4 &&
+        payload[0] == 0x00 &&
+        payload[1] == 0x68 &&
+        payload[2] == 0x34 &&
+        payload[3] == 0x00) {
+        if (onAudioData_) {
+            onAudioData_(payload, payloadSize, timestamp);
+        }
+        return;
+    }
+
+    enqueueAudioPacket(sequenceNumber, timestamp, payload, payloadSize);
+}
+
+void RTPReceiver::enqueueAudioPacket(
+        uint16_t sequenceNumber,
+        uint32_t timestamp,
+        const uint8_t* payload,
+        size_t payloadSize) {
+    if (audioBufferEmpty_) {
+        firstAudioSequence_ = sequenceNumber;
+        lastAudioSequence_ = sequenceNumber;
+        audioBufferEmpty_ = false;
+    } else {
+        if (seqnumCmp(sequenceNumber, firstAudioSequence_) < 0) {
+            droppedAudioPackets_++;
+            return;
+        }
+
+        while (seqnumCmp(sequenceNumber, static_cast<uint16_t>(firstAudioSequence_ + audioPacketBuffer_.size())) >= 0) {
+            auto& firstEntry = audioPacketBuffer_[firstAudioSequence_ % audioPacketBuffer_.size()];
+            if (firstEntry.filled && firstEntry.sequenceNumber == firstAudioSequence_) {
+                firstEntry.filled = false;
+                firstEntry.payload.clear();
+            } else {
+                droppedAudioPackets_++;
+            }
+
+            if (firstAudioSequence_ == lastAudioSequence_) {
+                audioBufferEmpty_ = true;
+                break;
+            }
+            firstAudioSequence_++;
+        }
+
+        if (audioBufferEmpty_) {
+            firstAudioSequence_ = sequenceNumber;
+            lastAudioSequence_ = sequenceNumber;
+            audioBufferEmpty_ = false;
+        } else if (seqnumCmp(sequenceNumber, lastAudioSequence_) > 0) {
+            lastAudioSequence_ = sequenceNumber;
+        }
+    }
+
+    auto& entry = audioPacketBuffer_[sequenceNumber % audioPacketBuffer_.size()];
+    if (entry.filled && entry.sequenceNumber == sequenceNumber) {
+        duplicateAudioPackets_++;
+        return;
+    }
+
+    entry.filled = true;
+    entry.sequenceNumber = sequenceNumber;
+    entry.timestamp = timestamp;
+    entry.payload.assign(payload, payload + payloadSize);
+    drainAudioPackets();
+}
+
+void RTPReceiver::drainAudioPackets() {
+    while (!audioBufferEmpty_) {
+        auto& entry = audioPacketBuffer_[firstAudioSequence_ % audioPacketBuffer_.size()];
+        if (!entry.filled || entry.sequenceNumber != firstAudioSequence_) {
+            return;
+        }
+
+        bufferedAudioPackets_++;
+        if (onAudioData_) {
+            onAudioData_(entry.payload.data(), entry.payload.size(), entry.timestamp);
+        }
+
+        entry.filled = false;
+        entry.payload.clear();
+        if (firstAudioSequence_ == lastAudioSequence_) {
+            audioBufferEmpty_ = true;
+            return;
+        }
+        firstAudioSequence_++;
+    }
+}
+
+void RTPReceiver::resetAudioPacketBuffer() {
+    audioBufferEmpty_ = true;
+    firstAudioSequence_ = 0;
+    lastAudioSequence_ = 0;
+    bufferedAudioPackets_ = 0;
+    duplicateAudioPackets_ = 0;
+    droppedAudioPackets_ = 0;
+    for (auto& entry : audioPacketBuffer_) {
+        entry.filled = false;
+        entry.sequenceNumber = 0;
+        entry.timestamp = 0;
+        entry.payload.clear();
+    }
+}
+
+short RTPReceiver::seqnumCmp(uint16_t left, uint16_t right) {
+    return static_cast<short>(left - right);
+}
+
+uint64_t RTPReceiver::convertNtpToUnixMicros(uint64_t ntpTimestamp) {
+    static constexpr uint64_t kNtpToUnixEpochSeconds = 2208988800ULL;
+
+    const uint64_t seconds = ntpTimestamp >> 32;
+    const uint64_t fraction = ntpTimestamp & 0xFFFFFFFFULL;
+    const uint64_t unixSeconds = seconds > kNtpToUnixEpochSeconds
+        ? seconds - kNtpToUnixEpochSeconds
+        : 0ULL;
+    const uint64_t microsFraction = (fraction * 1000000ULL) >> 32;
+    return (unixSeconds * 1000000ULL) + microsFraction;
+}
+
+uint64_t RTPReceiver::getCurrentUnixMicros() {
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(now).count());
 }

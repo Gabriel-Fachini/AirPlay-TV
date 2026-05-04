@@ -119,6 +119,26 @@ void onAudioDataCallback(const uint8_t* data, size_t size, uint32_t timestamp) {
     env->DeleteLocalRef(cls);
 }
 
+void onAudioSyncCallback(uint32_t rtpSync, uint64_t remoteNtpUs, uint64_t localNtpUs, bool initial) {
+    JNIEnv* env = getJNIEnv();
+    if (!env || !g_callbackObject) return;
+
+    jclass cls = env->GetObjectClass(g_callbackObject);
+    jmethodID method = env->GetMethodID(cls, "onAudioSync", "(JJJZ)V");
+
+    if (method) {
+        env->CallVoidMethod(
+            g_callbackObject,
+            method,
+            static_cast<jlong>(rtpSync),
+            static_cast<jlong>(remoteNtpUs),
+            static_cast<jlong>(localNtpUs),
+            static_cast<jboolean>(initial));
+    }
+
+    env->DeleteLocalRef(cls);
+}
+
 void onMirroringVideoPacketCallback(int payloadType, const uint8_t* data, size_t size) {
     JNIEnv* env = getJNIEnv();
     if (!env || !g_callbackObject) return;
@@ -341,6 +361,7 @@ Java_com_airplay_tv_protocol_ProtocolHandler_startRTSPServerNative(
     g_server->setActivityCallback(onActivityCallback);
     g_server->setVideoDataCallback(onVideoDataCallback);
     g_server->setAudioDataCallback(onAudioDataCallback);
+    g_server->setAudioSyncCallback(onAudioSyncCallback);
     g_server->setErrorCallback(onErrorCallback);
     g_server->setMirroringVideoPacketCallback(onMirroringVideoPacketCallback);
     g_server->setPhotoPlaybackCallback(onPhotoPlaybackCallback);
@@ -441,6 +462,49 @@ Java_com_airplay_tv_protocol_ProtocolHandler_getAudioConfigNative(
     }
 
     return result;
+}
+
+JNIEXPORT void JNICALL
+Java_com_airplay_tv_protocol_ProtocolHandler_updateAudioSessionConfigNative(
+        JNIEnv*,
+        jobject,
+        jint compressionType,
+        jint samplesPerFrame,
+        jlong audioFormat,
+        jint sampleRate,
+        jint channels,
+        jint remoteControlPort,
+        jint localDataPort,
+        jint localControlPort,
+        jint localTimingPort,
+        jboolean isMedia,
+        jboolean usingScreen) {
+    if (g_server == nullptr) {
+        return;
+    }
+
+    AirPlayServer::AudioSessionConfig config;
+    config.compressionType = compressionType;
+    config.samplesPerFrame = samplesPerFrame;
+    config.audioFormat = static_cast<uint64_t>(audioFormat);
+    config.sampleRate = sampleRate;
+    config.channels = channels;
+    config.remoteControlPort = remoteControlPort;
+    config.localDataPort = localDataPort;
+    config.localControlPort = localControlPort;
+    config.localTimingPort = localTimingPort;
+    config.isMedia = isMedia == JNI_TRUE;
+    config.usingScreen = usingScreen == JNI_TRUE;
+    g_server->updateAudioSessionConfig(config);
+}
+
+JNIEXPORT void JNICALL
+Java_com_airplay_tv_protocol_ProtocolHandler_resetAudioSessionConfigNative(
+        JNIEnv*,
+        jobject) {
+    if (g_server != nullptr) {
+        g_server->resetAudioSessionConfig();
+    }
 }
 
 JNIEXPORT jbyteArray JNICALL

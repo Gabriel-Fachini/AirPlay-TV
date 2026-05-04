@@ -103,6 +103,7 @@ class VideoDecoder(
     private var sessionStartTimeUs = 0L  // Tempo de início da sessão (para cálculo de latência)
     private var bytesSubmittedSinceLastBitrateSample = 0L
     private var lastBitrateSampleTimeMs = System.currentTimeMillis()
+    private var lastRenderedPresentationTimeUs = 0L
     
     // Monitoramento de performance
     private var lowFpsCounter = 0
@@ -250,6 +251,7 @@ class VideoDecoder(
         
         // Limpar fila de entrada
         inputQueue.clear()
+        lastRenderedPresentationTimeUs = 0L
         _state.value = DecoderState.Idle
         
         Logger.i(Logger.TAG_VIDEO, "Video decoder stopped (decoded=$framesDecoded, dropped=$framesDropped, fps=$currentFps)")
@@ -503,6 +505,7 @@ class VideoDecoder(
                 val elapsedSinceSessionStartUs = currentTimeUs - sessionStartTimeUs
                 val latencyUs = elapsedSinceSessionStartUs - bufferInfo.presentationTimeUs
                 val latencyMs = latencyUs / 1000
+                lastRenderedPresentationTimeUs = bufferInfo.presentationTimeUs
                 
                 // Atualizar telemetria
                 telemetryCollector.updateVideoMetrics(
@@ -563,6 +566,8 @@ class VideoDecoder(
         bytesSubmittedSinceLastBitrateSample = 0L
         lastBitrateSampleTimeMs = now
     }
+
+    fun getLastRenderedPresentationTimeUs(): Long = lastRenderedPresentationTimeUs
     
     /**
      * Verifica performance e ajusta buffer dinamicamente

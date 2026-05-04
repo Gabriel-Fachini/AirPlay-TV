@@ -22,12 +22,27 @@ class NTPClient;
  */
 class AirPlayServer {
 public:
+    struct AudioSessionConfig {
+        int compressionType = 0;
+        int samplesPerFrame = 0;
+        uint64_t audioFormat = 0;
+        int sampleRate = 44100;
+        int channels = 2;
+        int remoteControlPort = 0;
+        int localDataPort = 7100;
+        int localControlPort = 6001;
+        int localTimingPort = 7002;
+        bool isMedia = false;
+        bool usingScreen = false;
+    };
+
     // Callbacks para eventos
     using ConnectionCallback = std::function<void(const std::string& clientIp)>;
     using DisconnectionCallback = std::function<void()>;
     using ActivityCallback = std::function<void(const std::string& method)>;
     using VideoDataCallback = std::function<void(const uint8_t* data, size_t size, uint32_t timestamp)>;
     using AudioDataCallback = std::function<void(const uint8_t* data, size_t size, uint32_t timestamp)>;
+    using AudioSyncCallback = std::function<void(uint32_t rtpSync, uint64_t remoteNtpUs, uint64_t localNtpUs, bool initial)>;
     using ErrorCallback = std::function<void(const std::string& error)>;
     using PhotoPlaybackCallback = std::function<void(
         const std::string& clientIp,
@@ -58,6 +73,7 @@ public:
     void setActivityCallback(ActivityCallback callback) { onActivity_ = callback; }
     void setVideoDataCallback(VideoDataCallback callback) { onVideoData_ = callback; }
     void setAudioDataCallback(AudioDataCallback callback) { onAudioData_ = callback; }
+    void setAudioSyncCallback(AudioSyncCallback callback) { onAudioSync_ = callback; }
     void setErrorCallback(ErrorCallback callback) { onError_ = callback; }
     void setPhotoPlaybackCallback(PhotoPlaybackCallback callback) { onPhotoPlayback_ = callback; }
     void setSlideshowPlaybackCallback(SlideshowPlaybackCallback callback) { onSlideshowPlayback_ = callback; }
@@ -69,6 +85,9 @@ public:
     int getVideoHeight() const { return videoHeight_; }
     int getAudioSampleRate() const { return audioSampleRate_; }
     int getAudioChannels() const { return audioChannels_; }
+    AudioSessionConfig getAudioSessionConfig() const { return audioSessionConfig_; }
+    void updateAudioSessionConfig(const AudioSessionConfig& config);
+    void resetAudioSessionConfig();
 
 private:
     void serverThread();
@@ -154,6 +173,7 @@ private:
     ActivityCallback onActivity_;
     VideoDataCallback onVideoData_;
     AudioDataCallback onAudioData_;
+    AudioSyncCallback onAudioSync_;
     ErrorCallback onError_;
     PhotoPlaybackCallback onPhotoPlayback_;
     SlideshowPlaybackCallback onSlideshowPlayback_;
@@ -174,6 +194,7 @@ private:
     std::unique_ptr<RTPReceiver> rtpReceiver_;
     std::unique_ptr<MirrorServer> mirrorServer_;
     std::unique_ptr<NTPClient> ntpClient_;
+    AudioSessionConfig audioSessionConfig_;
 };
 
 #endif // AIRPLAY_SERVER_H

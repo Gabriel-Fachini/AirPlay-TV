@@ -275,7 +275,7 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
                     )
                     return@launch
                 } else {
-                    Logger.i(Logger.TAG_SERVICE, "No Wi-Fi but has network (emulator?), proceeding...")
+                    Logger.d(Logger.TAG_SERVICE, "Net ok ip=$localIp")
                 }
             }
             
@@ -288,7 +288,7 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
             // Obter SSID da rede (pode não estar disponível no emulador)
             val ssid = NetworkUtils.getWifiSsid(getApplication())
             if (ssid != null) {
-                Logger.i(Logger.TAG_SERVICE, "Connected to Wi-Fi: $ssid")
+                Logger.d(Logger.TAG_SERVICE, "SSID=$ssid")
             }
             
             // Registrar serviço mDNS
