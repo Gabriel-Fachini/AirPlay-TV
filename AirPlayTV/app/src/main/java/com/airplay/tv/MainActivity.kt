@@ -9,6 +9,7 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,6 +35,7 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: AirPlayViewModel by viewModels()
     private var isTelemetryOverlayVisible by mutableStateOf(false)
+    private var mirroringPresentationMode by mutableStateOf(MirroringPresentationMode.FIT)
     private var lastCenterPressUptimeMs = 0L
     
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -47,7 +49,11 @@ class MainActivity : ComponentActivity() {
                 ) {
                     AirPlayScreen(
                         viewModel = viewModel,
-                        telemetryOverlayVisible = isTelemetryOverlayVisible
+                        telemetryOverlayVisible = isTelemetryOverlayVisible,
+                        mirroringPresentationMode = mirroringPresentationMode,
+                        onResetMirroringPresentation = {
+                            mirroringPresentationMode = MirroringPresentationMode.FIT
+                        }
                     )
                 }
             }
@@ -67,7 +73,12 @@ class MainActivity : ComponentActivity() {
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         val currentState = viewModel.uiState.value
 
-        if (currentState is UIStateManager.UIState.Mirroring && isCenterEnterKey(keyCode)) {
+        if (
+            currentState is UIStateManager.UIState.Mirroring &&
+            isCenterEnterKey(keyCode) &&
+            (event?.repeatCount ?: 0) == 0
+        ) {
+            event?.startTracking()
             val now = SystemClock.uptimeMillis()
             if (now - lastCenterPressUptimeMs <= TELEMETRY_TOGGLE_DOUBLE_PRESS_WINDOW_MS) {
                 isTelemetryOverlayVisible = !isTelemetryOverlayVisible
@@ -90,6 +101,21 @@ class MainActivity : ComponentActivity() {
         }
         return super.onKeyDown(keyCode, event)
     }
+
+    override fun onKeyLongPress(keyCode: Int, event: KeyEvent?): Boolean {
+        val currentState = viewModel.uiState.value
+        if (currentState is UIStateManager.UIState.Mirroring && isCenterEnterKey(keyCode)) {
+            mirroringPresentationMode = when (mirroringPresentationMode) {
+                MirroringPresentationMode.FIT -> MirroringPresentationMode.VIDEO_CROP_16_9
+                MirroringPresentationMode.VIDEO_CROP_16_9 -> MirroringPresentationMode.FIT
+            }
+            lastCenterPressUptimeMs = 0L
+            Logger.i(Logger.TAG_UI, "Mirroring presentation mode=$mirroringPresentationMode")
+            return true
+        }
+
+        return super.onKeyLongPress(keyCode, event)
+    }
     
     override fun onDestroy() {
         super.onDestroy()
@@ -110,12 +136,33 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AirPlayScreen(
     viewModel: AirPlayViewModel,
-    telemetryOverlayVisible: Boolean
+    telemetryOverlayVisible: Boolean,
+    mirroringPresentationMode: MirroringPresentationMode,
+    onResetMirroringPresentation: () -> Unit,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val telemetry by viewModel.telemetry.collectAsState()
     val videoOutputSize by viewModel.videoOutputSize.collectAsState()
     val mdnsState by viewModel.mdnsState.collectAsState()
+    val resolvedVideoSize = resolveVideoSize(
+        videoOutputSize = videoOutputSize,
+        telemetry = telemetry,
+        resolution = (uiState as? UIStateManager.UIState.Mirroring)?.resolution ?: "1920x1080"
+    )
+
+    LaunchedEffect(uiState, resolvedVideoSize, mirroringPresentationMode) {
+        if (uiState !is UIStateManager.UIState.Mirroring) {
+            onResetMirroringPresentation()
+            return@LaunchedEffect
+        }
+
+        if (
+            mirroringPresentationMode == MirroringPresentationMode.VIDEO_CROP_16_9 &&
+            resolvedVideoSize.second >= resolvedVideoSize.first
+        ) {
+            onResetMirroringPresentation()
+        }
+    }
     
     when (val state = uiState) {
         is UIStateManager.UIState.Startup -> {
@@ -138,6 +185,7 @@ fun AirPlayScreen(
                 clientIp = state.clientIp,
                 resolution = state.resolution,
                 videoOutputSize = videoOutputSize,
+                presentationMode = mirroringPresentationMode,
                 telemetry = telemetry,
                 telemetryOverlayVisible = telemetryOverlayVisible,
                 onSurfaceReady = { surface ->
