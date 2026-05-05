@@ -43,6 +43,19 @@ struct NativeServerState {
 
 std::unique_ptr<NativeServerState> g_state;
 
+void resetCachedSessionState(NativeServerState* state) {
+    if (state == nullptr) {
+        return;
+    }
+
+    state->clientLabel.clear();
+    state->width = 1920;
+    state->height = 1080;
+    state->transportConnected = false;
+    state->javaConnectionNotified = false;
+    state->audio = NativeAudioState{};
+}
+
 bool containsIdrNalUnit(const uint8_t* data, size_t size) {
     if (data == nullptr || size < 5) {
         return false;
@@ -82,6 +95,19 @@ void onSessionConnected(void* context, const char* clientLabel) {
         return;
     }
 
+    const bool hadResidualState =
+        state->transportConnected ||
+        state->javaConnectionNotified ||
+        state->audio.accessUnitsSeen > 0 ||
+        state->audio.syncSeen;
+    if (hadResidualState) {
+        LOGI(
+            "Resetting stale JNI session state before new connection notified=%d audioAu=%llu syncSeen=%d",
+            state->javaConnectionNotified ? 1 : 0,
+            static_cast<unsigned long long>(state->audio.accessUnitsSeen),
+            state->audio.syncSeen ? 1 : 0);
+    }
+    resetCachedSessionState(state);
     state->transportConnected = true;
     state->clientLabel = clientLabel != nullptr ? clientLabel : "airplay-client";
 }
@@ -92,10 +118,8 @@ void onSessionDisconnected(void* context) {
         return;
     }
 
-    state->transportConnected = false;
-    state->javaConnectionNotified = false;
-    state->audio.syncSeen = false;
     JniBridge::onDisconnectionCallback();
+    resetCachedSessionState(state);
 }
 
 void onProtocolError(void* /* context */, const char* message) {
@@ -229,19 +253,6 @@ void onVideoFrame(
         ntpLocalUs,
         containsIdrNalUnit(data, size));
     maybeNotifyConnected(state);
-}
-
-void resetCachedSessionState(NativeServerState* state) {
-    if (state == nullptr) {
-        return;
-    }
-
-    state->clientLabel.clear();
-    state->width = 1920;
-    state->height = 1080;
-    state->transportConnected = false;
-    state->javaConnectionNotified = false;
-    state->audio = NativeAudioState{};
 }
 
 } // namespace

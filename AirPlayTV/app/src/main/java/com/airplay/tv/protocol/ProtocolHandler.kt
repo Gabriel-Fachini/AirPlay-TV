@@ -197,6 +197,7 @@ class ProtocolHandler(
             rtpParser.resetStats()
             audioPipeline.reset()
             playbackStateStore.reset()
+            jniBridge.resetSessionStateNative()
             jniBridge.resetAudioSessionConfigNative()
         } else {
             Logger.e(Logger.TAG_PROTOCOL, "Failed to start RTSP server")
@@ -223,6 +224,7 @@ class ProtocolHandler(
         _mediaPlaybackState.value = MediaPlaybackState.Idle
         playbackStateStore.reset()
         _connectionState.value = ConnectionState.Idle
+        jniBridge.resetSessionStateNative()
         jniBridge.resetAudioSessionConfigNative()
         
         // Logar estatísticas finais
@@ -305,6 +307,7 @@ class ProtocolHandler(
         pairingManager.resetSession()
         mirroringSession.reset()
         _connectionState.value = ConnectionState.Idle
+        jniBridge.resetSessionStateNative()
         jniBridge.resetAudioSessionConfigNative()
         
         // Logar estatísticas da sessão
@@ -319,6 +322,7 @@ class ProtocolHandler(
         pairingManager.resetSession()
         mirroringSession.reset()
         _connectionState.value = ConnectionState.Error(error)
+        jniBridge.resetSessionStateNative()
         jniBridge.resetAudioSessionConfigNative()
     }
 

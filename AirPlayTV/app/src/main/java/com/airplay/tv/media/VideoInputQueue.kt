@@ -79,7 +79,7 @@ class VideoInputQueue {
     fun pollFrameForCodec(submittedInputFrames: Long, onFramesDropped: (Long) -> Unit): VideoDecoder.H264Frame? {
         var frame = inputQueue.poll() ?: return null
 
-        while (submittedInputFrames == 0L && !frame.isKeyFrame) {
+        while (submittedInputFrames == 0L && !frame.isKeyFrame && !containsCodecConfig(frame.data)) {
             onFramesDropped(1)
             Logger.w(Logger.TAG_VIDEO, "Dropping pre-start non-keyframe while waiting for an IDR")
             frame = inputQueue.poll() ?: return null
@@ -94,5 +94,9 @@ class VideoInputQueue {
             }
         }
         return false
+    }
+
+    private fun containsCodecConfig(data: ByteArray): Boolean {
+        return containsNalType(data, 7) || containsNalType(data, 8)
     }
 }

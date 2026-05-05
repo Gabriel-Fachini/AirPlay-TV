@@ -27,9 +27,10 @@ internal fun isValidAnnexBFrame(data: ByteArray): Boolean {
     }
 
     var index = 0
-    while (index + ANNEX_B_START_CODE.size < data.size) {
-        if (hasAnnexBStartCode(data, index)) {
-            val nalHeaderIndex = index + ANNEX_B_START_CODE.size
+    while (index < data.size) {
+        val startCodeLength = annexBStartCodeLength(data, index)
+        if (startCodeLength > 0) {
+            val nalHeaderIndex = index + startCodeLength
             if (nalHeaderIndex < data.size) {
                 val nalType = data[nalHeaderIndex].toInt() and 0x1F
                 if (nalType in 1..12) {
@@ -44,13 +45,18 @@ internal fun isValidAnnexBFrame(data: ByteArray): Boolean {
 }
 
 internal fun containsIdrNalUnit(data: ByteArray): Boolean {
+    return containsNalType(data, 5)
+}
+
+internal fun containsNalType(data: ByteArray, targetNalType: Int): Boolean {
     var index = 0
-    while (index + ANNEX_B_START_CODE.size < data.size) {
-        if (hasAnnexBStartCode(data, index)) {
-            val nalHeaderIndex = index + ANNEX_B_START_CODE.size
+    while (index < data.size) {
+        val startCodeLength = annexBStartCodeLength(data, index)
+        if (startCodeLength > 0) {
+            val nalHeaderIndex = index + startCodeLength
             if (nalHeaderIndex < data.size) {
                 val nalType = data[nalHeaderIndex].toInt() and 0x1F
-                if (nalType == 5) {
+                if (nalType == targetNalType) {
                     return true
                 }
             }
@@ -69,4 +75,19 @@ private fun hasAnnexBStartCode(data: ByteArray, offset: Int): Boolean {
         data[offset + 1] == 0.toByte() &&
         data[offset + 2] == 0.toByte() &&
         data[offset + 3] == 1.toByte()
+}
+
+private fun hasShortAnnexBStartCode(data: ByteArray, offset: Int): Boolean {
+    return offset + 3 <= data.size &&
+        data[offset] == 0.toByte() &&
+        data[offset + 1] == 0.toByte() &&
+        data[offset + 2] == 1.toByte()
+}
+
+private fun annexBStartCodeLength(data: ByteArray, offset: Int): Int {
+    return when {
+        hasAnnexBStartCode(data, offset) -> 4
+        hasShortAnnexBStartCode(data, offset) -> 3
+        else -> 0
+    }
 }

@@ -119,9 +119,42 @@ struct UxRaopCore::Impl {
         return static_cast<Impl*>(context);
     }
 
+    static void resetConnectionScopedState(Impl* impl, bool keepClientLabel) {
+        if (impl == nullptr) {
+            return;
+        }
+        impl->notifiedConnected = false;
+        impl->emittedAudioConfig = false;
+        impl->emittedVideoConfig = false;
+        impl->audioAccessUnitsSeen = 0;
+        impl->videoFramesSeen = 0;
+        impl->lastVolume = 0.0f;
+        impl->lastAudioFormat = UxRaopAudioFormat{};
+        impl->width = impl->displayInfo.width;
+        impl->height = impl->displayInfo.height;
+        if (!keepClientLabel) {
+            impl->clientLabel = "airplay-client";
+        }
+    }
+
     static void connInit(void* context) {
         auto* impl = self(context);
-        if (!impl->notifiedConnected && impl->callbacks.onSessionConnected != nullptr) {
+        const bool hadResidualState =
+            impl->notifiedConnected ||
+            impl->emittedAudioConfig ||
+            impl->emittedVideoConfig ||
+            impl->audioAccessUnitsSeen > 0 ||
+            impl->videoFramesSeen > 0;
+        if (hadResidualState) {
+            LOGW(
+                "conn_init resetting stale session state audioCfg=%d videoCfg=%d audioAu=%llu videoFrames=%llu",
+                impl->emittedAudioConfig ? 1 : 0,
+                impl->emittedVideoConfig ? 1 : 0,
+                static_cast<unsigned long long>(impl->audioAccessUnitsSeen),
+                static_cast<unsigned long long>(impl->videoFramesSeen));
+        }
+        resetConnectionScopedState(impl, true);
+        if (impl->callbacks.onSessionConnected != nullptr) {
             impl->callbacks.onSessionConnected(impl->callbacks.context, impl->clientLabel.c_str());
             impl->notifiedConnected = true;
         }
@@ -129,8 +162,7 @@ struct UxRaopCore::Impl {
 
     static void connDestroy(void* context) {
         auto* impl = self(context);
-        impl->notifiedConnected = false;
-        impl->emittedAudioConfig = false;
+        resetConnectionScopedState(impl, false);
         if (impl->callbacks.onSessionDisconnected != nullptr) {
             impl->callbacks.onSessionDisconnected(impl->callbacks.context);
         }

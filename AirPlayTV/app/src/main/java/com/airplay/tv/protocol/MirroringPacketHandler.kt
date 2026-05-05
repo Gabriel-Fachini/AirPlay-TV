@@ -2,6 +2,8 @@ package com.airplay.tv.protocol
 
 import com.airplay.tv.media.VideoDecoder
 import com.airplay.tv.media.containsIdrNalUnit
+import com.airplay.tv.media.containsNalType
+import com.airplay.tv.media.isValidAnnexBFrame
 import com.airplay.tv.util.Logger
 import java.nio.ByteBuffer
 
@@ -28,12 +30,7 @@ internal class MirroringPacketHandler(
             0 -> {
                 val currentDecryptor = decryptor
                 val frame = if (currentDecryptor != null) {
-                    try {
-                        currentDecryptor.decodeVideoPayload(payload)
-                    } catch (e: Exception) {
-                        Logger.w(Logger.TAG_PROTOCOL, "Decryption failed, trying unencrypted: ${e.message}")
-                        parseMirroringVideoPayload(payload)
-                    }
+                    chooseBestDecodedFrame(payload, currentDecryptor)
                 } else {
                     parseMirroringVideoPayload(payload)
                 }
@@ -112,5 +109,47 @@ internal class MirroringPacketHandler(
         }
 
         return prefixedFrame
+    }
+
+    private fun chooseBestDecodedFrame(
+        payload: ByteArray,
+        currentDecryptor: VideoStreamDecryptor,
+    ): ByteArray? {
+        val decryptedFrame = try {
+            currentDecryptor.decodeVideoPayload(payload)
+        } catch (e: Exception) {
+            Logger.w(Logger.TAG_PROTOCOL, "Decryption failed, trying unencrypted: ${e.message}")
+            null
+        }
+        val plainFrame = parseMirroringVideoPayload(payload)
+
+        val decryptedScore = scoreCandidateFrame(decryptedFrame)
+        val plainScore = scoreCandidateFrame(plainFrame)
+
+        if (plainScore > decryptedScore) {
+            Logger.i(
+                Logger.TAG_PROTOCOL,
+                "Using plaintext mirrored payload instead of decrypted payload " +
+                    "(plainScore=$plainScore decryptedScore=$decryptedScore)"
+            )
+            return plainFrame
+        }
+        return decryptedFrame ?: plainFrame
+    }
+
+    private fun scoreCandidateFrame(frame: ByteArray?): Int {
+        if (frame == null || frame.isEmpty()) {
+            return Int.MIN_VALUE
+        }
+        if (!isValidAnnexBFrame(frame)) {
+            return -1
+        }
+
+        var score = 1
+        if (containsNalType(frame, 7)) score += 2
+        if (containsNalType(frame, 8)) score += 2
+        if (containsIdrNalUnit(frame)) score += 4
+        if (containsNalType(frame, 1)) score += 1
+        return score
     }
 }
