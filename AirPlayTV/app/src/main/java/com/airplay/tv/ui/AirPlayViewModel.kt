@@ -9,6 +9,7 @@ import com.airplay.tv.network.mDNSModule
 import com.airplay.tv.protocol.ProtocolHandler
 import com.airplay.tv.service.AirPlayService
 import com.airplay.tv.service.SessionManager
+import com.airplay.tv.service.VideoOutputSize
 import com.airplay.tv.util.Constants
 import com.airplay.tv.util.Logger
 import com.airplay.tv.util.TelemetryCollector
@@ -38,6 +39,13 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = TelemetryCollector.Telemetry()
+    )
+    val videoOutputSize: StateFlow<VideoOutputSize> = VideoOutputSizeFlowBinder.bind(
+        serviceConnectionManager.serviceFlow.map { service -> service?.getVideoOutputSize() }
+    ).stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = VideoOutputSize()
     )
     private val mediaStateTracker = MediaStateTracker(uiStateManager)
 

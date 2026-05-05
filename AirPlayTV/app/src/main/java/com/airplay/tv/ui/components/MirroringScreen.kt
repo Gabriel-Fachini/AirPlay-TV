@@ -17,6 +17,7 @@ import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.widget.FrameLayout
+import com.airplay.tv.service.VideoOutputSize
 import com.airplay.tv.util.Constants
 import com.airplay.tv.util.TelemetryCollector
 
@@ -27,6 +28,7 @@ import com.airplay.tv.util.TelemetryCollector
 fun MirroringScreen(
     clientIp: String,
     resolution: String,
+    videoOutputSize: VideoOutputSize,
     telemetry: TelemetryCollector.Telemetry,
     telemetryOverlayVisible: Boolean,
     onSurfaceReady: (Surface) -> Unit = {},
@@ -41,12 +43,14 @@ fun MirroringScreen(
     Box(
         modifier = Modifier.fillMaxSize()
     ) {
-        val resolvedVideoSize = remember(telemetry.resolutionWidth, telemetry.resolutionHeight, resolution) {
-            if (telemetry.resolutionWidth > 0 && telemetry.resolutionHeight > 0) {
-                Pair(telemetry.resolutionWidth, telemetry.resolutionHeight)
-            } else {
-                parseResolutionLabel(resolution) ?: Pair(1920, 1080)
-            }
+        val resolvedVideoSize = remember(
+            videoOutputSize.width,
+            videoOutputSize.height,
+            telemetry.resolutionWidth,
+            telemetry.resolutionHeight,
+            resolution
+        ) {
+            resolveVideoSize(videoOutputSize, telemetry, resolution)
         }
 
         BoxWithConstraints(
@@ -88,7 +92,7 @@ fun MirroringScreen(
                     }
                 },
                 update = { surfaceView ->
-                    surfaceView.holder.setFixedSize(resolvedVideoSize.first, resolvedVideoSize.second)
+                    surfaceView.holder.setSizeFromLayout()
                     (surfaceView.layoutParams as? FrameLayout.LayoutParams)?.apply {
                         gravity = Gravity.CENTER
                     }
@@ -114,7 +118,23 @@ fun MirroringScreen(
     }
 }
 
-private fun parseResolutionLabel(resolution: String): Pair<Int, Int>? {
+internal fun resolveVideoSize(
+    videoOutputSize: VideoOutputSize,
+    telemetry: TelemetryCollector.Telemetry,
+    resolution: String
+): Pair<Int, Int> {
+    if (videoOutputSize.width > 0 && videoOutputSize.height > 0) {
+        return Pair(videoOutputSize.width, videoOutputSize.height)
+    }
+
+    if (telemetry.resolutionWidth > 0 && telemetry.resolutionHeight > 0) {
+        return Pair(telemetry.resolutionWidth, telemetry.resolutionHeight)
+    }
+
+    return parseResolutionLabel(resolution) ?: Pair(1920, 1080)
+}
+
+internal fun parseResolutionLabel(resolution: String): Pair<Int, Int>? {
     val parts = resolution.split("x")
     if (parts.size != 2) {
         return null

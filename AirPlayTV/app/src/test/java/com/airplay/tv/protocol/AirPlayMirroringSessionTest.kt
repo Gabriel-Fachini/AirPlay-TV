@@ -28,6 +28,7 @@ class AirPlayMirroringSessionTest {
             pairingManager = AirPlayPairingManager(),
             decryptFairPlayAesKey = { null },
             startMirrorVideoServer = { 0 },
+            getEventPort = { 7000 },
             onCodecConfigReceived = { _: ByteBuffer, _: ByteBuffer, _: Int, _: Int -> },
             onAudioCryptoConfigured = { },
             prepareAudioStream = {

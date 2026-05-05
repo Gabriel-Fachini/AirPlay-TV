@@ -76,7 +76,7 @@ internal class MediaPipelineController(
                 syncManager = null
             }
 
-            telemetryCollector.updateResolution(sessionInfo.videoWidth, sessionInfo.videoHeight)
+            videoOutputSize.value = VideoOutputSize()
             pendingSessionInfo = null
             mediaPipelineStarted = true
 
@@ -164,7 +164,12 @@ internal class MediaPipelineController(
             return
         }
 
+        if (videoOutputSize.value.width == width && videoOutputSize.value.height == height) {
+            return
+        }
+
         Logger.i(Logger.TAG_SERVICE, "Video output size updated: ${width}x${height}")
+        telemetryCollector.updateResolution(width, height)
         videoOutputSize.value = VideoOutputSize(width, height)
     }
 

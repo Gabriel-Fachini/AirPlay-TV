@@ -114,6 +114,7 @@ fun AirPlayScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val telemetry by viewModel.telemetry.collectAsState()
+    val videoOutputSize by viewModel.videoOutputSize.collectAsState()
     val mdnsState by viewModel.mdnsState.collectAsState()
     
     when (val state = uiState) {
@@ -136,6 +137,7 @@ fun AirPlayScreen(
             MirroringScreen(
                 clientIp = state.clientIp,
                 resolution = state.resolution,
+                videoOutputSize = videoOutputSize,
                 telemetry = telemetry,
                 telemetryOverlayVisible = telemetryOverlayVisible,
                 onSurfaceReady = { surface ->
