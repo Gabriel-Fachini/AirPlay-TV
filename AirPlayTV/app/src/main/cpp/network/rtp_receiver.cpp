@@ -38,23 +38,44 @@ RTPReceiver::~RTPReceiver() {
     LOGI("RTPReceiver destroyed");
 }
 
-bool RTPReceiver::bindUDPSocket(int socket, int port) {
+bool RTPReceiver::bindPreferredUDPSocket(int socket, int* port) {
+    if (port == nullptr) {
+        return false;
+    }
+
+    const int preferredPort = *port;
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(port);
+    addr.sin_port = htons(preferredPort);
 
     if (bind(socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        LOGE("Failed to bind UDP socket to port %d: %s", port, strerror(errno));
+        if (preferredPort == 0) {
+            LOGE("Failed to bind UDP socket to ephemeral port: %s", strerror(errno));
+            return false;
+        }
+
+        LOGW("Failed to bind UDP socket to preferred port %d: %s. Falling back to ephemeral port.", preferredPort, strerror(errno));
+        addr.sin_port = htons(0);
+        if (bind(socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+            LOGE("Failed to bind UDP socket after fallback: %s", strerror(errno));
+            return false;
+        }
+    }
+
+    socklen_t addrLen = sizeof(addr);
+    if (getsockname(socket, (struct sockaddr*)&addr, &addrLen) < 0) {
+        LOGE("Failed to read bound UDP socket port: %s", strerror(errno));
         return false;
     }
 
-    LOGI("UDP socket bound to port %d", port);
+    *port = ntohs(addr.sin_port);
+    LOGI("UDP socket bound to port %d", *port);
     return true;
 }
 
-bool RTPReceiver::start(int dataPort, int controlPort, int timingPort) {
+bool RTPReceiver::start(int* dataPort, int* controlPort, int* timingPort) {
     if (running_) {
         LOGW("RTP receiver already running");
         return false;
@@ -63,8 +84,12 @@ bool RTPReceiver::start(int dataPort, int controlPort, int timingPort) {
     hasReceivedAudioSync_ = false;
     resetAudioPacketBuffer();
 
-    LOGI("Starting RTP receiver (data=%d, control=%d, timing=%d)", 
-         dataPort, controlPort, timingPort);
+    const int requestedDataPort = dataPort != nullptr ? *dataPort : 0;
+    const int requestedControlPort = controlPort != nullptr ? *controlPort : 0;
+    const int requestedTimingPort = timingPort != nullptr ? *timingPort : 0;
+
+    LOGI("Starting RTP receiver (data=%d, control=%d, timing=%d)",
+         requestedDataPort, requestedControlPort, requestedTimingPort);
 
     // Create UDP sockets
     dataSocket_ = socket(AF_INET, SOCK_DGRAM, 0);
@@ -100,7 +125,7 @@ bool RTPReceiver::start(int dataPort, int controlPort, int timingPort) {
     NetworkUtils::setSocketTimeout(timingSocket_, 1);
 
     // Bind to ports
-    if (!bindUDPSocket(dataSocket_, dataPort)) {
+    if (!bindPreferredUDPSocket(dataSocket_, dataPort)) {
         close(dataSocket_);
         close(controlSocket_);
         close(timingSocket_);
@@ -111,7 +136,7 @@ bool RTPReceiver::start(int dataPort, int controlPort, int timingPort) {
         return false;
     }
 
-    if (!bindUDPSocket(controlSocket_, controlPort)) {
+    if (!bindPreferredUDPSocket(controlSocket_, controlPort)) {
         close(dataSocket_);
         close(controlSocket_);
         close(timingSocket_);
@@ -122,7 +147,7 @@ bool RTPReceiver::start(int dataPort, int controlPort, int timingPort) {
         return false;
     }
 
-    if (!bindUDPSocket(timingSocket_, timingPort)) {
+    if (!bindPreferredUDPSocket(timingSocket_, timingPort)) {
         close(dataSocket_);
         close(controlSocket_);
         close(timingSocket_);
@@ -196,6 +221,15 @@ void RTPReceiver::stop() {
 void RTPReceiver::setAudioConfig(int compressionType, int sampleRate) {
     compressionType_ = compressionType;
     sampleRate_ = sampleRate > 0 ? sampleRate : 44100;
+}
+
+void RTPReceiver::flushAudio(uint16_t nextSequenceNumber, bool hasNextSequenceNumber) {
+    resetAudioPacketBuffer();
+    if (hasNextSequenceNumber) {
+        firstAudioSequence_ = nextSequenceNumber;
+        lastAudioSequence_ = nextSequenceNumber;
+    }
+    LOGI("Audio RTP buffer flushed nextSeq=%d active=%d", hasNextSequenceNumber ? nextSequenceNumber : -1, hasNextSequenceNumber ? 1 : 0);
 }
 
 void RTPReceiver::receiveDataThread() {

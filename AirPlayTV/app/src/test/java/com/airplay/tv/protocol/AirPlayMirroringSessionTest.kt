@@ -30,7 +30,15 @@ class AirPlayMirroringSessionTest {
             startMirrorVideoServer = { 0 },
             onCodecConfigReceived = { _: ByteBuffer, _: ByteBuffer, _: Int, _: Int -> },
             onAudioCryptoConfigured = { },
-            onAudioStreamConfigured = { capturedAudioConfig = it },
+            prepareAudioStream = {
+                capturedAudioConfig = it.copy(
+                    remoteTimingPort = 7777,
+                    localDataPort = 7111,
+                    localControlPort = 6111,
+                    localTimingPort = 7005,
+                )
+                capturedAudioConfig!!
+            },
         )
 
         val request = NSDictionary().apply {
@@ -57,8 +65,8 @@ class AirPlayMirroringSessionTest {
         val streams = parsedResponse.objectForKey("streams") as NSArray
         val firstStream = streams.objectAtIndex(0) as NSDictionary
 
-        assertEquals(7100L, (firstStream.objectForKey("dataPort") as NSNumber).longValue())
-        assertEquals(6001L, (firstStream.objectForKey("controlPort") as NSNumber).longValue())
+        assertEquals(7111L, (firstStream.objectForKey("dataPort") as NSNumber).longValue())
+        assertEquals(6111L, (firstStream.objectForKey("controlPort") as NSNumber).longValue())
         assertEquals(96L, (firstStream.objectForKey("type") as NSNumber).longValue())
 
         val config = capturedAudioConfig
@@ -67,6 +75,10 @@ class AirPlayMirroringSessionTest {
         assertEquals(480, config.samplesPerFrame)
         assertEquals(0x40000000000L, config.audioFormat)
         assertEquals(5555, config.remoteControlPort)
+        assertEquals(7777, config.remoteTimingPort)
+        assertEquals(7111, config.localDataPort)
+        assertEquals(6111, config.localControlPort)
+        assertEquals(7005, config.localTimingPort)
         assertEquals(true, config.isMedia)
         assertEquals(true, config.usingScreen)
     }

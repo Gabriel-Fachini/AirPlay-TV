@@ -7,6 +7,7 @@ import com.airplay.tv.util.Logger
 
 class AudioTrackManager {
     private var audioTrack: AudioTrack? = null
+    private var firstWriteLogged = false
 
     fun configure(sampleRate: Int, channels: Int): Boolean {
         try {
@@ -39,6 +40,7 @@ class AudioTrackManager {
                 .setBufferSizeInBytes(bufferSize * 2) // Buffer maior para estabilidade
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
+            firstWriteLogged = false
             return true
         } catch (e: Exception) {
             Logger.e(Logger.TAG_AUDIO, "Failed to configure AudioTrack", e)
@@ -65,7 +67,20 @@ class AudioTrackManager {
     }
 
     fun write(audioData: ByteArray, offsetInBytes: Int, sizeInBytes: Int): Int {
-        return audioTrack?.write(audioData, offsetInBytes, sizeInBytes) ?: -1
+        val track = audioTrack ?: return -1
+        var totalWritten = 0
+        while (totalWritten < sizeInBytes) {
+            val written = track.write(audioData, offsetInBytes + totalWritten, sizeInBytes - totalWritten)
+            if (written <= 0) {
+                return if (totalWritten > 0) totalWritten else written
+            }
+            totalWritten += written
+        }
+        if (!firstWriteLogged) {
+            Logger.i(Logger.TAG_AUDIO, "AudioTrack first write bytes=$totalWritten")
+            firstWriteLogged = true
+        }
+        return totalWritten
     }
 
     fun setPlaybackRate(rate: Float) {

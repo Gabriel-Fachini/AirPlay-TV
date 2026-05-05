@@ -21,7 +21,7 @@ class AirPlayMirroringSession(
     private val startMirrorVideoServer: () -> Int,
     private val onCodecConfigReceived: (sps: ByteBuffer, pps: ByteBuffer, width: Int, height: Int) -> Unit,
     private val onAudioCryptoConfigured: (AudioCryptoConfig?) -> Unit,
-    private val onAudioStreamConfigured: (AudioStreamConfig) -> Unit,
+    private val prepareAudioStream: (AudioStreamConfig) -> AudioStreamConfig,
 ) {
     private val packetHandler = MirroringPacketHandler(
         videoDecoder = videoDecoder,
@@ -33,7 +33,7 @@ class AirPlayMirroringSession(
         decryptFairPlayAesKey = decryptFairPlayAesKey,
         startMirrorVideoServer = startMirrorVideoServer,
         onAudioCryptoConfigured = onAudioCryptoConfigured,
-        onAudioStreamConfigured = onAudioStreamConfigured,
+        prepareAudioStream = prepareAudioStream,
         onVideoStreamConfigured = { decryptor ->
             packetHandler.decryptor = decryptor
         }

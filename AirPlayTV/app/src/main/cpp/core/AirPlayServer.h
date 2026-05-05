@@ -78,8 +78,10 @@ public:
     int getAudioSampleRate() const { return mediaOrchestrator_->getAudioSampleRate(); }
     int getAudioChannels() const { return mediaOrchestrator_->getAudioChannels(); }
     AudioSessionConfig getAudioSessionConfig() const { return mediaOrchestrator_->getAudioSessionConfig(); }
+    AudioSessionConfig prepareAudioSession(const AudioSessionConfig& config) { return mediaOrchestrator_->prepareAudioSession(config, clientIp_); }
     void updateAudioSessionConfig(const AudioSessionConfig& config) { mediaOrchestrator_->updateAudioSessionConfig(config); }
     void resetAudioSessionConfig() { mediaOrchestrator_->resetAudioSessionConfig(); }
+    void resetSessionState();
 
     int startMirrorVideoServer() { return mediaOrchestrator_->startMirrorVideoServer(); }
     bool decryptFairPlayAesKey(const uint8_t* encryptedKey, size_t size, std::vector<uint8_t>* outKey);
@@ -99,6 +101,7 @@ private:
     void handleGetParameter(int socket, const std::string& cseq, const std::string& request);
     void handleSetParameter(int socket, const std::string& cseq, const std::string& request);
     void handleFeedback(int socket, const std::string& cseq);
+    void handleFlush(int socket, const std::string& cseq, const std::string& request);
     void handleRecord(int socket, const std::string& cseq);
     void handleTeardown(int socket, const std::string& cseq);
     

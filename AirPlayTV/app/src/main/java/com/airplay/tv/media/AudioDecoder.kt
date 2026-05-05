@@ -28,6 +28,8 @@ class AudioDecoder(
     private var codec: MediaCodec? = null
     private var decoderJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private var firstQueuedFrameLogged = false
+    private var firstDecodedPcmLogged = false
     
     data class AACFrame(
         val data: ByteArray,
@@ -82,6 +84,8 @@ class AudioDecoder(
             this.sampleRate = sampleRate
             this.channels = channels
             performanceTracker.resetMetrics()
+            firstQueuedFrameLogged = false
+            firstDecodedPcmLogged = false
             
             // Criar decoder AAC
             codec = MediaCodec.createDecoderByType(Constants.AUDIO_CODEC_MIME)
@@ -184,10 +188,27 @@ class AudioDecoder(
         if (_state.value != DecoderState.Running) {
             return
         }
-        
+        if (!firstQueuedFrameLogged) {
+            Logger.i(
+                Logger.TAG_AUDIO,
+                "Queue first AAC frame size=${data.size} rtpTs=$rtpTimestamp pts=$presentationTimeUs locked=$clockLocked"
+            )
+            firstQueuedFrameLogged = true
+        }
         performanceTracker.onFrameQueued(data.size, rtpTimestamp, presentationTimeUs, clockLocked)
         inputQueue.queueFrame(data, rtpTimestamp, presentationTimeUs, clockLocked) {
             performanceTracker.onFrameDropped()
+        }
+    }
+
+    fun flush() {
+        inputQueue.clear()
+        val codec = this.codec ?: return
+        try {
+            codec.flush()
+            Logger.i(Logger.TAG_AUDIO, "Audio decoder flushed")
+        } catch (e: IllegalStateException) {
+            Logger.w(Logger.TAG_AUDIO, "Audio decoder flush ignored due to codec state", e)
         }
     }
     
@@ -291,6 +312,13 @@ class AudioDecoder(
                     if (written < 0) {
                         Logger.e(Logger.TAG_AUDIO, "AudioTrack write error: $written")
                     } else {
+                        if (!firstDecodedPcmLogged) {
+                            Logger.i(
+                                Logger.TAG_AUDIO,
+                                "First PCM decoded bytes=${audioData.size} pts=${bufferInfo.presentationTimeUs} written=$written"
+                            )
+                            firstDecodedPcmLogged = true
+                        }
                         performanceTracker.onSamplesDecoded(written, bufferInfo.presentationTimeUs)
                     }
                 }

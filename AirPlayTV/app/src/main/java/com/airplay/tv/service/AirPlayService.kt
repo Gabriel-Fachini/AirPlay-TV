@@ -60,6 +60,27 @@ class AirPlayService : Service() {
         }
 
         scope.launch {
+            protocolHandler.audioConfigReceived.collect { event ->
+                Logger.i(
+                    Logger.TAG_SERVICE,
+                    "Audio config received source=${event.source} codec=${event.streamConfig.codecLabel} " +
+                        "rate=${event.streamConfig.sampleRate} ch=${event.streamConfig.channels}"
+                )
+                val activeSession = sessionManager.getCurrentSession()
+                val sessionInfo = protocolHandler.getSessionInfo()
+                if (activeSession == null || sessionInfo == null) {
+                    Logger.i(Logger.TAG_SERVICE, "Deferring audio pipeline start until session is active")
+                    return@collect
+                }
+                val started = mediaPipelineController.ensureAudioPipelineStarted(sessionInfo)
+                Logger.i(
+                    Logger.TAG_SERVICE,
+                    "Deferred audio pipeline result started=$started activeClient=${activeSession.clientIp}"
+                )
+            }
+        }
+
+        scope.launch {
             protocolHandler.mediaPlaybackState.collect { state ->
                 if (state is ProtocolHandler.MediaPlaybackState.Idle) {
                     Logger.i(Logger.TAG_SERVICE, "Media playback state: Idle")

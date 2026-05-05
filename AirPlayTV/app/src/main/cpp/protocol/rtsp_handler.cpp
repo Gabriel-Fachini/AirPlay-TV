@@ -187,6 +187,32 @@ void RTSPHandler::handleFeedback(int socket, const std::string& cseq) {
     send(socket, responseStr.c_str(), responseStr.length(), 0);
 }
 
+void RTSPHandler::handleFlush(int socket, const std::string& cseq, const std::string& request) {
+    int nextSequenceNumber = -1;
+    const std::string rtpInfo = extractHeader(request, "RTP-Info");
+    if (!rtpInfo.empty()) {
+        const std::string prefix = "seq=";
+        const size_t seqPos = rtpInfo.find(prefix);
+        if (seqPos != std::string::npos) {
+            nextSequenceNumber = std::stoi(rtpInfo.substr(seqPos + prefix.length()));
+        }
+    }
+
+    std::ostringstream response;
+    response << "RTSP/1.0 200 OK\r\n";
+    response << "CSeq: " << cseq << "\r\n";
+    response << "Content-Length: 0\r\n";
+    response << "Server: AirTunes/220.68\r\n";
+    response << "\r\n";
+
+    const std::string responseStr = response.str();
+    send(socket, responseStr.c_str(), responseStr.length(), 0);
+
+    if (onFlush_) {
+        onFlush_(nextSequenceNumber);
+    }
+}
+
 void RTSPHandler::handleRecord(int socket, const std::string& cseq) {
     LOGI("Handling RECORD request - streaming started");
 

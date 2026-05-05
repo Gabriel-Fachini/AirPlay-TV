@@ -70,13 +70,7 @@ internal class MediaPipelineController(
             Logger.i(Logger.TAG_SERVICE, "Waiting for codec config to configure video decoder")
 
             if (audioConfigurator.startAudioPipeline(sessionInfo)) {
-
-                try {
-                    syncManager = SyncManager(videoDecoder, audioDecoder).also { it.start() }
-                } catch (e: Exception) {
-                    Logger.e(Logger.TAG_SERVICE, "Failed to start sync manager", e)
-                    syncManager = null
-                }
+                ensureSyncManagerStarted()
             } else {
                 syncManager = null
             }
@@ -93,6 +87,38 @@ internal class MediaPipelineController(
                 stopMediaPipeline()
             } catch (cleanupError: Exception) {
                 Logger.e(Logger.TAG_SERVICE, "Error during cleanup", cleanupError)
+            }
+        }
+    }
+
+    fun ensureAudioPipelineStarted(sessionInfo: ProtocolHandler.SessionInfo): Boolean {
+        return when (audioDecoder.state.value) {
+            DecoderState.Running -> {
+                Logger.i(Logger.TAG_SERVICE, "Audio pipeline already running")
+                true
+            }
+            DecoderState.Configured -> {
+                Logger.i(Logger.TAG_SERVICE, "Audio decoder configured but not running; starting now")
+                try {
+                    audioDecoder.start()
+                    ensureSyncManagerStarted()
+                    true
+                } catch (e: Exception) {
+                    Logger.e(Logger.TAG_SERVICE, "Failed to start configured audio decoder", e)
+                    false
+                }
+            }
+            else -> {
+                Logger.i(
+                    Logger.TAG_SERVICE,
+                    "Starting deferred audio pipeline codec=${sessionInfo.audioStreamConfig.codecLabel} " +
+                        "rate=${sessionInfo.audioSampleRate} ch=${sessionInfo.audioChannels}"
+                )
+                val started = audioConfigurator.startAudioPipeline(sessionInfo)
+                if (started) {
+                    ensureSyncManagerStarted()
+                }
+                started
             }
         }
     }
@@ -141,5 +167,16 @@ internal class MediaPipelineController(
         Logger.i(Logger.TAG_SERVICE, "Video output size updated: ${width}x${height}")
         videoOutputSize.value = VideoOutputSize(width, height)
     }
-}
 
+    private fun ensureSyncManagerStarted() {
+        if (syncManager != null) {
+            return
+        }
+        try {
+            syncManager = SyncManager(videoDecoder, audioDecoder).also { it.start() }
+        } catch (e: Exception) {
+            Logger.e(Logger.TAG_SERVICE, "Failed to start sync manager", e)
+            syncManager = null
+        }
+    }
+}

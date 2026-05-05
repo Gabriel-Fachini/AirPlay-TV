@@ -42,21 +42,42 @@ class ProtocolHandler(
         onAudioCryptoConfigured = { config ->
             audioPipeline.configureCrypto(config)
         },
-        onAudioStreamConfigured = { config ->
-            audioPipeline.configureStream(config)
-            jniBridge.updateAudioSessionConfigNative(
+        prepareAudioStream = { config ->
+            val ports = jniBridge.prepareAudioSessionNative(
                 config.compressionType,
                 config.samplesPerFrame,
                 config.audioFormat,
                 config.sampleRate,
                 config.channels,
                 config.remoteControlPort,
+                config.remoteTimingPort,
                 config.localDataPort,
                 config.localControlPort,
                 config.localTimingPort,
                 config.isMedia,
                 config.usingScreen,
             )
+            val preparedConfig = config.copy(
+                localDataPort = ports.getOrElse(0) { config.localDataPort },
+                localControlPort = ports.getOrElse(1) { config.localControlPort },
+                localTimingPort = ports.getOrElse(2) { config.localTimingPort },
+            )
+            audioPipeline.configureStream(preparedConfig)
+            jniBridge.updateAudioSessionConfigNative(
+                preparedConfig.compressionType,
+                preparedConfig.samplesPerFrame,
+                preparedConfig.audioFormat,
+                preparedConfig.sampleRate,
+                preparedConfig.channels,
+                preparedConfig.remoteControlPort,
+                preparedConfig.remoteTimingPort,
+                preparedConfig.localDataPort,
+                preparedConfig.localControlPort,
+                preparedConfig.localTimingPort,
+                preparedConfig.isMedia,
+                preparedConfig.usingScreen,
+            )
+            preparedConfig
         },
     )
     
@@ -114,11 +135,20 @@ class ProtocolHandler(
         val width: Int,
         val height: Int
     )
+    data class AudioConfigEvent(
+        val streamConfig: AudioStreamConfig,
+        val source: String,
+    )
     private val _codecConfigReceived = MutableSharedFlow<CodecConfig>(
         replay = 0,
         extraBufferCapacity = 1
     )
     val codecConfigReceived: SharedFlow<CodecConfig> = _codecConfigReceived.asSharedFlow()
+    private val _audioConfigReceived = MutableSharedFlow<AudioConfigEvent>(
+        replay = 0,
+        extraBufferCapacity = 4,
+    )
+    val audioConfigReceived: SharedFlow<AudioConfigEvent> = _audioConfigReceived.asSharedFlow()
     
     // Parser RTP
     private val rtpParser = RTPParser()
@@ -294,6 +324,79 @@ class ProtocolHandler(
 
     override fun onControlRequestHandled(method: String) {
         mediaDispatcher.onControlRequestHandled(method)
+    }
+
+    override fun onAudioFlush(nextSequenceNumber: Int?) {
+        Logger.i(Logger.TAG_PROTOCOL, "Audio flush nextSeq=${nextSequenceNumber ?: "none"}")
+        audioDecoder?.flush()
+    }
+
+    override fun onVideoConfig(width: Int, height: Int, sps: ByteArray, pps: ByteArray) {
+        Logger.i(
+            Logger.TAG_PROTOCOL,
+            "Native video config ${width}x$height sps=${sps.size}B pps=${pps.size}B"
+        )
+        _codecConfigReceived.tryEmit(
+            CodecConfig(
+                ByteBuffer.wrap(sps),
+                ByteBuffer.wrap(pps),
+                width,
+                height,
+            )
+        )
+        currentSession = getSessionInfo()
+    }
+
+    override fun onVideoPayload(data: ByteArray, ptsUs: Long, isKeyFrame: Boolean) {
+        _sessionActivity.tryEmit("VIDEO")
+        videoDecoder?.queueFrame(
+            data = data,
+            timestamp = (ptsUs * 90_000L) / 1_000_000L,
+            isKeyFrame = isKeyFrame,
+        )
+    }
+
+    override fun onAudioConfig(
+        compressionType: Int,
+        samplesPerFrame: Int,
+        audioFormat: Long,
+        sampleRate: Int,
+        channels: Int,
+        isMedia: Boolean,
+        usingScreen: Boolean,
+    ) {
+        val streamConfig = audioPipeline.currentStreamConfig.copy(
+            compressionType = compressionType,
+            samplesPerFrame = samplesPerFrame,
+            audioFormat = audioFormat,
+            sampleRate = sampleRate,
+            channels = channels,
+            isMedia = isMedia,
+            usingScreen = usingScreen,
+        )
+        Logger.i(
+            Logger.TAG_PROTOCOL,
+            "Native audio config codec=${streamConfig.codecLabel} spf=$samplesPerFrame " +
+                "fmt=0x${audioFormat.toString(16)} rate=$sampleRate ch=$channels"
+        )
+        audioPipeline.configureStream(streamConfig)
+        _audioConfigReceived.tryEmit(AudioConfigEvent(streamConfig, "native"))
+        currentSession = getSessionInfo()
+    }
+
+    override fun onAudioAccessUnit(
+        data: ByteArray,
+        rtpTimestamp: Long,
+        presentationTimeUs: Long,
+        clockLocked: Boolean,
+    ) {
+        _sessionActivity.tryEmit("AUDIO")
+        audioDecoder?.queueFrame(
+            data = data,
+            rtpTimestamp = rtpTimestamp,
+            presentationTimeUs = presentationTimeUs,
+            clockLocked = clockLocked,
+        )
     }
 
     override fun onPairSetup(data: ByteArray): ByteArray? {

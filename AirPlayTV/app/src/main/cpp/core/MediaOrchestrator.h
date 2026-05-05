@@ -16,6 +16,7 @@ public:
         int sampleRate = 44100;
         int channels = 2;
         int remoteControlPort = 0;
+        int remoteTimingPort = 0;
         int localDataPort = 7100;
         int localControlPort = 6001;
         int localTimingPort = 7002;
@@ -37,6 +38,8 @@ public:
     void startNTPClient(const std::string& clientIp);
     void stopNTPClient();
 
+    AudioSessionConfig prepareAudioSession(const AudioSessionConfig& config, const std::string& clientIp);
+    void flushAudio(uint16_t nextSequenceNumber, bool hasNextSequenceNumber);
     void updateAudioSessionConfig(const AudioSessionConfig& config);
     void resetAudioSessionConfig();
     AudioSessionConfig getAudioSessionConfig() const { return audioSessionConfig_; }

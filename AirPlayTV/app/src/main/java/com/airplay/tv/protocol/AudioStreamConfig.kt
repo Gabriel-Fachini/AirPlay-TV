@@ -9,6 +9,7 @@ data class AudioStreamConfig(
     val sampleRate: Int = 44_100,
     val channels: Int = 2,
     val remoteControlPort: Int = 0,
+    val remoteTimingPort: Int = 0,
     val localDataPort: Int = 7100,
     val localControlPort: Int = 6001,
     val localTimingPort: Int = 7002,

@@ -72,4 +72,40 @@ class AudioFrameDecryptorSelectorTest {
         assertEquals(1L, first.invalidCount)
         assertEquals(2L, second.invalidCount)
     }
+
+    @Test
+    fun `relocks to alternate candidate after locked key becomes invalid`() {
+        var hashedValid = true
+        val selector = AudioFrameDecryptorSelector(
+            candidates = listOf(
+                AudioFrameDecryptorSelector.Candidate(
+                    label = "hashed",
+                    decrypt = {
+                        if (hashedValid) byteArrayOf(0x8c.toByte(), 0x01) else byteArrayOf(0x00, 0x01)
+                    }
+                ),
+                AudioFrameDecryptorSelector.Candidate(
+                    label = "plain",
+                    decrypt = { byteArrayOf(0x8d.toByte(), 0x02) }
+                ),
+            ),
+            framesToLock = 2,
+        )
+
+        repeat(2) {
+            selector.decrypt(byteArrayOf(0x01)) { it.first() == 0x8c.toByte() || it.first() == 0x8d.toByte() }
+        }
+
+        hashedValid = false
+
+        val firstRecovery = selector.decrypt(byteArrayOf(0x01)) { it.first() == 0x8c.toByte() || it.first() == 0x8d.toByte() }
+        assertArrayEquals(byteArrayOf(0x8d.toByte(), 0x02), firstRecovery.frame)
+        assertTrue(firstRecovery.lockAcquired)
+        assertEquals("plain", firstRecovery.lockedLabel)
+
+        val relocked = selector.decrypt(byteArrayOf(0x01)) { it.first() == 0x8c.toByte() || it.first() == 0x8d.toByte() }
+        assertFalse(relocked.lockAcquired)
+        assertEquals("plain", relocked.lockedLabel)
+        assertArrayEquals(byteArrayOf(0x8d.toByte(), 0x02), relocked.frame)
+    }
 }

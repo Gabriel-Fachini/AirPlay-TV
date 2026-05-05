@@ -57,9 +57,7 @@ bool AirPlayServer::start(int port) {
 
 void AirPlayServer::stop() {
     sessionManager_->stop();
-    mediaOrchestrator_->stopRTPReceiver();
-    mediaOrchestrator_->stopMirrorVideoServer();
-    mediaOrchestrator_->stopNTPClient();
+    resetSessionState();
 }
 
 void AirPlayServer::handleClient(int clientSocket, const std::string& clientIp) {
@@ -86,8 +84,13 @@ void AirPlayServer::handleClient(int clientSocket, const std::string& clientIp) 
             sessionAnnounced_ = true;
             onConnection_(clientIp_);
         }
-        mediaOrchestrator_->startRTPReceiver();
-        mediaOrchestrator_->startNTPClient(clientIp_);
+    });
+
+    rtspHandler_->setFlushCallback([this](int nextSequenceNumber) {
+        mediaOrchestrator_->flushAudio(
+            static_cast<uint16_t>(nextSequenceNumber >= 0 ? nextSequenceNumber : 0),
+            nextSequenceNumber >= 0);
+        JniBridge::onAudioFlushCallback(nextSequenceNumber);
     });
 
     fairplayHandler_->setPairSetupCallback([](const uint8_t* data, size_t size, bool* ok) {
@@ -144,6 +147,7 @@ void AirPlayServer::handleClient(int clientSocket, const std::string& clientIp) 
                 } else {
                     LOGW("Failed to handle RTSP request: %s", requestLine.c_str());
                 }
+                resetSessionState();
                 return;
             }
             
@@ -153,6 +157,22 @@ void AirPlayServer::handleClient(int clientSocket, const std::string& clientIp) 
             }
         }
     }
+
+    resetSessionState();
+}
+
+void AirPlayServer::resetSessionState() {
+    mediaOrchestrator_->stopRTPReceiver();
+    mediaOrchestrator_->stopMirrorVideoServer();
+    mediaOrchestrator_->stopNTPClient();
+    mediaOrchestrator_->resetAudioSessionConfig();
+    routeDispatcher_->resetSessionState();
+    routeDispatcher_->setClientIp("");
+    fairPlayKeyMessage_.clear();
+    clientIp_.clear();
+    videoWidth_ = 1920;
+    videoHeight_ = 1080;
+    sessionAnnounced_ = false;
 }
 
 bool AirPlayServer::handleRTSPRequest(int socket, const std::string& request) {
@@ -220,6 +240,9 @@ bool AirPlayServer::handleRTSPRequest(int socket, const std::string& request) {
     } else if (request.find("POST /feedback") != std::string::npos || request.find("FEEDBACK") == 0) {
         handleFeedback(socket, cseq);
         notifyActivity("FEEDBACK");
+    } else if (request.find("FLUSH") == 0) {
+        handleFlush(socket, cseq, request);
+        notifyActivity("FLUSH");
     } else if (request.find("RECORD") == 0) {
         LOGI("Handling RECORD request");
         handleRecord(socket, cseq);
@@ -277,6 +300,12 @@ void AirPlayServer::handleSetParameter(int socket, const std::string& cseq, cons
 void AirPlayServer::handleFeedback(int socket, const std::string& cseq) {
     if (rtspHandler_) {
         rtspHandler_->handleFeedback(socket, cseq);
+    }
+}
+
+void AirPlayServer::handleFlush(int socket, const std::string& cseq, const std::string& request) {
+    if (rtspHandler_) {
+        rtspHandler_->handleFlush(socket, cseq, request);
     }
 }
 

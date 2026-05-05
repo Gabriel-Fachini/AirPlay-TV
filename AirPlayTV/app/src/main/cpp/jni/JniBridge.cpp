@@ -85,6 +85,20 @@ void JniBridge::onActivityCallback(const std::string& methodName) {
     env->DeleteLocalRef(cls);
 }
 
+void JniBridge::onAudioFlushCallback(int nextSequenceNumber) {
+    JNIEnv* env = getJNIEnv();
+    if (!env || !g_callbackObject) return;
+
+    jclass cls = env->GetObjectClass(g_callbackObject);
+    jmethodID method = env->GetMethodID(cls, "onAudioFlush", "(I)V");
+
+    if (method) {
+        env->CallVoidMethod(g_callbackObject, method, static_cast<jint>(nextSequenceNumber));
+    }
+
+    env->DeleteLocalRef(cls);
+}
+
 void JniBridge::onErrorCallback(const std::string& error) {
     JNIEnv* env = getJNIEnv();
     if (!env || !g_callbackObject) return;
@@ -98,6 +112,118 @@ void JniBridge::onErrorCallback(const std::string& error) {
         env->DeleteLocalRef(jError);
     }
     
+    env->DeleteLocalRef(cls);
+}
+
+void JniBridge::onVideoConfigCallback(
+        uint16_t width,
+        uint16_t height,
+        const uint8_t* sps,
+        size_t spsSize,
+        const uint8_t* pps,
+        size_t ppsSize) {
+    JNIEnv* env = getJNIEnv();
+    if (!env || !g_callbackObject) return;
+
+    jclass cls = env->GetObjectClass(g_callbackObject);
+    jmethodID method = env->GetMethodID(cls, "onVideoConfig", "(II[B[B)V");
+
+    if (method) {
+        jbyteArray jSps = env->NewByteArray(static_cast<jsize>(spsSize));
+        jbyteArray jPps = env->NewByteArray(static_cast<jsize>(ppsSize));
+        env->SetByteArrayRegion(jSps, 0, static_cast<jsize>(spsSize), reinterpret_cast<const jbyte*>(sps));
+        env->SetByteArrayRegion(jPps, 0, static_cast<jsize>(ppsSize), reinterpret_cast<const jbyte*>(pps));
+        env->CallVoidMethod(
+            g_callbackObject,
+            method,
+            static_cast<jint>(width),
+            static_cast<jint>(height),
+            jSps,
+            jPps);
+        env->DeleteLocalRef(jSps);
+        env->DeleteLocalRef(jPps);
+    }
+
+    env->DeleteLocalRef(cls);
+}
+
+void JniBridge::onVideoPayloadCallback(const uint8_t* data, size_t size, uint64_t ptsUs, bool isKeyFrame) {
+    JNIEnv* env = getJNIEnv();
+    if (!env || !g_callbackObject) return;
+
+    jclass cls = env->GetObjectClass(g_callbackObject);
+    jmethodID method = env->GetMethodID(cls, "onVideoPayload", "([BJZ)V");
+
+    if (method) {
+        jbyteArray jData = env->NewByteArray(static_cast<jsize>(size));
+        env->SetByteArrayRegion(jData, 0, static_cast<jsize>(size), reinterpret_cast<const jbyte*>(data));
+        env->CallVoidMethod(
+            g_callbackObject,
+            method,
+            jData,
+            static_cast<jlong>(ptsUs),
+            static_cast<jboolean>(isKeyFrame));
+        env->DeleteLocalRef(jData);
+    }
+
+    env->DeleteLocalRef(cls);
+}
+
+void JniBridge::onAudioConfigCallback(
+        uint8_t compressionType,
+        uint16_t samplesPerFrame,
+        uint64_t audioFormat,
+        uint32_t sampleRate,
+        uint32_t channels,
+        bool isMedia,
+        bool usingScreen) {
+    JNIEnv* env = getJNIEnv();
+    if (!env || !g_callbackObject) return;
+
+    jclass cls = env->GetObjectClass(g_callbackObject);
+    jmethodID method = env->GetMethodID(cls, "onAudioConfig", "(IIJIIZZ)V");
+
+    if (method) {
+        env->CallVoidMethod(
+            g_callbackObject,
+            method,
+            static_cast<jint>(compressionType),
+            static_cast<jint>(samplesPerFrame),
+            static_cast<jlong>(audioFormat),
+            static_cast<jint>(sampleRate),
+            static_cast<jint>(channels),
+            static_cast<jboolean>(isMedia),
+            static_cast<jboolean>(usingScreen));
+    }
+
+    env->DeleteLocalRef(cls);
+}
+
+void JniBridge::onAudioAccessUnitCallback(
+        const uint8_t* data,
+        size_t size,
+        uint32_t rtpTimestamp,
+        uint64_t presentationTimeUs,
+        bool clockLocked) {
+    JNIEnv* env = getJNIEnv();
+    if (!env || !g_callbackObject) return;
+
+    jclass cls = env->GetObjectClass(g_callbackObject);
+    jmethodID method = env->GetMethodID(cls, "onAudioAccessUnit", "([BJJZ)V");
+
+    if (method) {
+        jbyteArray jData = env->NewByteArray(static_cast<jsize>(size));
+        env->SetByteArrayRegion(jData, 0, static_cast<jsize>(size), reinterpret_cast<const jbyte*>(data));
+        env->CallVoidMethod(
+            g_callbackObject,
+            method,
+            jData,
+            static_cast<jlong>(rtpTimestamp),
+            static_cast<jlong>(presentationTimeUs),
+            static_cast<jboolean>(clockLocked));
+        env->DeleteLocalRef(jData);
+    }
+
     env->DeleteLocalRef(cls);
 }
 

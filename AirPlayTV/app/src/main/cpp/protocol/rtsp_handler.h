@@ -13,6 +13,7 @@ class RTSPHandler {
 public:
     using SetupCallback = std::function<std::vector<uint8_t>(const uint8_t*, size_t, bool*)>;
     using ConnectionCallback = std::function<void()>;
+    using FlushCallback = std::function<void(int)>;
 
     RTSPHandler();
     ~RTSPHandler();
@@ -24,6 +25,7 @@ public:
     void handleGetParameter(int socket, const std::string& cseq, const std::string& request);
     void handleSetParameter(int socket, const std::string& cseq, const std::string& request);
     void handleFeedback(int socket, const std::string& cseq);
+    void handleFlush(int socket, const std::string& cseq, const std::string& request);
     void handleRecord(int socket, const std::string& cseq);
     void handleTeardown(int socket, const std::string& cseq);
 
@@ -36,10 +38,12 @@ public:
     // Set callbacks
     void setSetupCallback(SetupCallback callback) { onSetup_ = callback; }
     void setRecordCallback(ConnectionCallback callback) { onRecord_ = callback; }
+    void setFlushCallback(FlushCallback callback) { onFlush_ = callback; }
 
 private:
     SetupCallback onSetup_;
     ConnectionCallback onRecord_;
+    FlushCallback onFlush_;
 };
 
 #endif // RTSP_HANDLER_H

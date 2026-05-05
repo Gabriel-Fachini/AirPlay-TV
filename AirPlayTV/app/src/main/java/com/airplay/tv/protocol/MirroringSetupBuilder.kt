@@ -15,7 +15,7 @@ internal class MirroringSetupBuilder(
     private val decryptFairPlayAesKey: (ByteArray) -> ByteArray?,
     private val startMirrorVideoServer: () -> Int,
     private val onAudioCryptoConfigured: (AudioCryptoConfig?) -> Unit,
-    private val onAudioStreamConfigured: (AudioStreamConfig) -> Unit,
+    private val prepareAudioStream: (AudioStreamConfig) -> AudioStreamConfig,
     private val onVideoStreamConfigured: (decryptor: VideoStreamDecryptor) -> Unit
 ) {
     private var videoMasterKey: ByteArray? = null
@@ -82,12 +82,25 @@ internal class MirroringSetupBuilder(
             )
         )
 
+        val remoteTimingPort = (root.objectForKey("timingPort") as? NSNumber)?.intValue() ?: 0
+        val localTimingPort = prepareAudioStream(
+            AudioStreamConfig(
+                remoteTimingPort = remoteTimingPort,
+                localDataPort = LEGACY_AUDIO_DATA_PORT,
+                localControlPort = LEGACY_AUDIO_CONTROL_PORT,
+                localTimingPort = TIMING_PORT,
+            )
+        ).localTimingPort
+
         val response = NSDictionary().apply {
             put("eventPort", NSNumber(Constants.RTSP_PORT.toLong()))
-            put("timingPort", NSNumber(TIMING_PORT.toLong()))
+            put("timingPort", NSNumber(localTimingPort.toLong()))
         }
 
-        Logger.i(Logger.TAG_PROTOCOL, "SETUP 1 ok")
+        Logger.i(
+            Logger.TAG_PROTOCOL,
+            "SETUP 1 ok rTiming=$remoteTimingPort lTiming=$localTimingPort"
+        )
         return BinaryPropertyListWriter.writeToArray(response)
     }
 
@@ -141,33 +154,36 @@ internal class MirroringSetupBuilder(
                 }
 
                 AUDIO_STREAM_TYPE -> {
-                    val audioConfig = AudioStreamConfig(
-                        compressionType = (stream.objectForKey("ct") as? NSNumber)?.intValue() ?: 0,
-                        samplesPerFrame = (stream.objectForKey("spf") as? NSNumber)?.intValue() ?: 0,
-                        audioFormat = (stream.objectForKey("audioFormat") as? NSNumber)?.longValue() ?: 0L,
-                        sampleRate = AUDIO_SAMPLE_RATE,
-                        channels = DEFAULT_AUDIO_CHANNELS,
-                        remoteControlPort = (stream.objectForKey("controlPort") as? NSNumber)?.intValue() ?: 0,
-                        localDataPort = LEGACY_AUDIO_DATA_PORT,
-                        localControlPort = LEGACY_AUDIO_CONTROL_PORT,
-                        localTimingPort = TIMING_PORT,
-                        isMedia = (stream.objectForKey("isMedia") as? NSNumber)?.boolValue() ?: false,
-                        usingScreen = (stream.objectForKey("usingScreen") as? NSNumber)?.boolValue() ?: false,
+                    val preparedAudioConfig = prepareAudioStream(
+                        AudioStreamConfig(
+                            compressionType = (stream.objectForKey("ct") as? NSNumber)?.intValue() ?: 0,
+                            samplesPerFrame = (stream.objectForKey("spf") as? NSNumber)?.intValue() ?: 0,
+                            audioFormat = (stream.objectForKey("audioFormat") as? NSNumber)?.longValue() ?: 0L,
+                            sampleRate = AUDIO_SAMPLE_RATE,
+                            channels = DEFAULT_AUDIO_CHANNELS,
+                            remoteControlPort = (stream.objectForKey("controlPort") as? NSNumber)?.intValue() ?: 0,
+                            remoteTimingPort = (stream.objectForKey("timingPort") as? NSNumber)?.intValue() ?: 0,
+                            localDataPort = LEGACY_AUDIO_DATA_PORT,
+                            localControlPort = LEGACY_AUDIO_CONTROL_PORT,
+                            localTimingPort = TIMING_PORT,
+                            isMedia = (stream.objectForKey("isMedia") as? NSNumber)?.boolValue() ?: false,
+                            usingScreen = (stream.objectForKey("usingScreen") as? NSNumber)?.boolValue() ?: false,
+                        )
                     )
-                    onAudioStreamConfigured(audioConfig)
                     responseStreams.add(
                         NSDictionary().apply {
-                            put("dataPort", NSNumber(LEGACY_AUDIO_DATA_PORT.toLong()))
-                            put("controlPort", NSNumber(LEGACY_AUDIO_CONTROL_PORT.toLong()))
+                            put("dataPort", NSNumber(preparedAudioConfig.localDataPort.toLong()))
+                            put("controlPort", NSNumber(preparedAudioConfig.localControlPort.toLong()))
                             put("type", NSNumber(AUDIO_STREAM_TYPE.toLong()))
                         }
                     )
                     Logger.i(
                         Logger.TAG_PROTOCOL,
-                        "SETUP audio codec=${audioConfig.codecLabel} ct=${audioConfig.compressionType} " +
-                            "spf=${audioConfig.samplesPerFrame} fmt=0x${audioConfig.audioFormat.toString(16)} " +
-                            "rCtrl=${audioConfig.remoteControlPort} lData=${audioConfig.localDataPort} " +
-                            "lCtrl=${audioConfig.localControlPort} ok=${audioConfig.isSupportedAac}"
+                        "SETUP audio codec=${preparedAudioConfig.codecLabel} ct=${preparedAudioConfig.compressionType} " +
+                            "spf=${preparedAudioConfig.samplesPerFrame} fmt=0x${preparedAudioConfig.audioFormat.toString(16)} " +
+                            "rCtrl=${preparedAudioConfig.remoteControlPort} rTiming=${preparedAudioConfig.remoteTimingPort} " +
+                            "lData=${preparedAudioConfig.localDataPort} lCtrl=${preparedAudioConfig.localControlPort} " +
+                            "lTiming=${preparedAudioConfig.localTimingPort} ok=${preparedAudioConfig.isSupportedAac}"
                     )
                 }
 

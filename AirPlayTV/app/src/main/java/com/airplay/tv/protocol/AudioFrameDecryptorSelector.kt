@@ -21,7 +21,18 @@ internal class AudioFrameDecryptorSelector internal constructor(
         if (locked != null) {
             val frame = locked.decrypt(payload)
             if (isValidFrame(frame)) {
+                locked.validStreak = framesToLock
                 return Result(frame = frame, lockedLabel = locked.label, lockAcquired = false)
+            }
+
+            locked.validStreak = 0
+            val relockResult = tryCandidates(
+                payload = payload,
+                isValidFrame = isValidFrame,
+                orderedCandidates = candidates.filter { it !== locked } + locked,
+            )
+            if (relockResult != null) {
+                return relockResult
             }
 
             invalidPackets++
@@ -34,22 +45,9 @@ internal class AudioFrameDecryptorSelector internal constructor(
             )
         }
 
-        for (candidate in candidates) {
-            val frame = candidate.decrypt(payload)
-            if (!isValidFrame(frame)) {
-                candidate.validStreak = 0
-                continue
-            }
-
-            candidate.validStreak++
-            if (candidate.validStreak >= framesToLock) {
-                lockedCandidate = candidate
-                return Result(
-                    frame = frame,
-                    lockedLabel = candidate.label,
-                    lockAcquired = true,
-                )
-            }
+        val lockResult = tryCandidates(payload, isValidFrame, candidates)
+        if (lockResult != null) {
+            return lockResult
         }
 
         invalidPackets++
@@ -76,8 +74,35 @@ internal class AudioFrameDecryptorSelector internal constructor(
         var validStreak: Int = 0,
     )
 
+    private fun tryCandidates(
+        payload: ByteArray,
+        isValidFrame: (ByteArray) -> Boolean,
+        orderedCandidates: List<Candidate>,
+    ): Result? {
+        for (candidate in orderedCandidates) {
+            val frame = candidate.decrypt(payload)
+            if (!isValidFrame(frame)) {
+                candidate.validStreak = 0
+                continue
+            }
+
+            candidate.validStreak++
+            if (candidate.validStreak >= framesToLock) {
+                lockedCandidate = candidate
+                invalidPackets = 0
+                return Result(
+                    frame = frame,
+                    lockedLabel = candidate.label,
+                    lockAcquired = true,
+                )
+            }
+        }
+
+        return null
+    }
+
     companion object {
-        private const val REQUIRED_VALID_STREAK = 3
+        private const val REQUIRED_VALID_STREAK = 6
 
         private fun buildCandidates(config: AudioCryptoConfig): List<Candidate> {
             val ordered = mutableListOf<Candidate>()

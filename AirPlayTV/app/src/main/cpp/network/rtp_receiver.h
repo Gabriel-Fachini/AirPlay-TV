@@ -24,10 +24,11 @@ public:
     ~RTPReceiver();
 
     // Start receiving on specified ports
-    bool start(int dataPort, int controlPort, int timingPort);
+    bool start(int* dataPort, int* controlPort, int* timingPort);
     void stop();
     bool isRunning() const { return running_; }
     void setAudioConfig(int compressionType, int sampleRate);
+    void flushAudio(uint16_t nextSequenceNumber, bool hasNextSequenceNumber);
 
     // Set callbacks for received data
     void setVideoDataCallback(VideoDataCallback callback) { onVideoData_ = callback; }
@@ -43,7 +44,7 @@ private:
     void enqueueAudioPacket(uint16_t sequenceNumber, uint32_t timestamp, const uint8_t* payload, size_t payloadSize);
     void drainAudioPackets();
     void resetAudioPacketBuffer();
-    bool bindUDPSocket(int socket, int port);
+    bool bindPreferredUDPSocket(int socket, int* port);
     static short seqnumCmp(uint16_t left, uint16_t right);
 
     struct AudioPacketEntry {
