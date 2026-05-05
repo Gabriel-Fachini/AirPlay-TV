@@ -46,7 +46,7 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
                         // Transicionar para Idle quando o serviço estiver registrado
                         if (uiStateManager.isInState(UIStateManager.UIState.Startup::class)) {
                             uiStateManager.transitionTo(
-                                UIStateManager.UIState.Idle(Constants.DEFAULT_DEVICE_NAME)
+                                UIStateManager.UIState.Idle("AirPlayTV")
                             )
                         }
                     }
@@ -127,7 +127,7 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
     private fun handleSessionStateChange(state: SessionManager.SessionState) {
         when (state) {
             is SessionManager.SessionState.Idle -> {
-                uiStateManager.returnToIdle(Constants.DEFAULT_DEVICE_NAME)
+                uiStateManager.returnToIdle("AirPlayTV")
                 telemetryCollector.reset()
             }
             
@@ -217,15 +217,9 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
                 Logger.i(Logger.TAG_SERVICE, "Local IP: $localIp")
             }
             
-            // Obter SSID da rede (pode não estar disponível no emulador)
-            val ssid = NetworkUtils.getWifiSsid(getApplication())
-            if (ssid != null) {
-                Logger.d(Logger.TAG_SERVICE, "SSID=$ssid")
-            }
-            
             // Registrar serviço mDNS
             mdnsModule.registerService(
-                deviceName = Constants.DEFAULT_DEVICE_NAME,
+                deviceName = "AirPlayTV",
                 port = Constants.RTSP_PORT
             )
             
@@ -234,7 +228,7 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
             Logger.i(Logger.TAG_SERVICE, "AirPlay service started")
         }
     }
-    
+
     /**
      * Para o serviço AirPlay
      * - Desregistra serviço mDNS
@@ -262,7 +256,7 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
             serviceConnectionManager.endSession()
             
             // Retornar ao Idle
-            uiStateManager.returnToIdle(Constants.DEFAULT_DEVICE_NAME)
+            uiStateManager.returnToIdle("AirPlayTV")
             telemetryCollector.reset()
         }
     }
@@ -311,7 +305,7 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
      * Retorna ao estado Idle
      */
     fun returnToIdle() {
-        uiStateManager.returnToIdle(Constants.DEFAULT_DEVICE_NAME)
+        uiStateManager.returnToIdle("AirPlayTV")
         telemetryCollector.reset()
     }
     
@@ -320,4 +314,5 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
         stopService()
         mdnsModule.cleanup()
     }
+
 }

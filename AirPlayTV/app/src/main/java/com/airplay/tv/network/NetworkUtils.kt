@@ -3,7 +3,6 @@ package com.airplay.tv.network
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import android.net.wifi.WifiManager
 import com.airplay.tv.util.Logger
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -54,30 +53,6 @@ object NetworkUtils {
             }
         } catch (e: Exception) {
             Logger.e(Logger.TAG_MDNS, "Error getting local IP: ${e.message}", e)
-        }
-        
-        return null
-    }
-    
-    /**
-     * Obtém nome da rede Wi-Fi conectada (SSID)
-     */
-    @Suppress("DEPRECATION")
-    fun getWifiSsid(context: Context): String? {
-        try {
-            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            val wifiInfo = wifiManager.connectionInfo
-            
-            if (wifiInfo != null) {
-                var ssid = wifiInfo.ssid
-                // Remover aspas do SSID
-                if (ssid.startsWith("\"") && ssid.endsWith("\"")) {
-                    ssid = ssid.substring(1, ssid.length - 1)
-                }
-                return ssid
-            }
-        } catch (e: Exception) {
-            Logger.e(Logger.TAG_MDNS, "Error getting Wi-Fi SSID: ${e.message}", e)
         }
         
         return null

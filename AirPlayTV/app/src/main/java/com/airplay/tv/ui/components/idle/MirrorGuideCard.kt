@@ -9,17 +9,25 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
@@ -34,6 +42,7 @@ import com.airplay.tv.ui.theme.SfCompactText
 fun MirrorGuideCard(
     deviceName: String,
     mdnsState: mDNSModule.ServiceState,
+    isReady: Boolean,
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -71,8 +80,8 @@ fun MirrorGuideCard(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(144.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically)
+                    .heightIn(min = 156.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp, Alignment.CenterVertically)
             ) {
                 GuideStep(
                     number = "1",
@@ -107,36 +116,44 @@ fun MirrorGuideCard(
                     .fillMaxWidth()
                     .padding(top = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.Top
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 DeviceBadge(
-                    modifier = Modifier.padding(top = 2.dp),
+                    modifier = Modifier,
                     icon = { SymbolGlyph(codePoint = 0x1003B2, size = 18.sp) }
                 )
 
                 Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 2.dp),
+                        .fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    Text(
-                        text = deviceName,
-                        style = MaterialTheme.typography.headlineMedium.copy(
-                            fontSize = 14.sp,
-                            lineHeight = 16.sp,
-                            fontWeight = FontWeight.SemiBold
-                        ),
-                        color = Color.White,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = deviceName,
+                            style = MaterialTheme.typography.headlineMedium.copy(
+                                fontSize = 14.sp,
+                                lineHeight = 16.sp,
+                                fontWeight = FontWeight.SemiBold
+                            ),
+                            color = Color.White,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (isReady) {
+                            ReadyPulseDot()
+                        }
+                    }
                     Text(
                         text = mdnsAvailabilityText(mdnsState),
                         style = MaterialTheme.typography.bodyLarge.copy(
                             fontSize = 9.sp,
                             lineHeight = 11.sp,
-                            fontWeight = FontWeight.Medium
+                            fontWeight = FontWeight.Normal
                         ),
                         color = Color.White.copy(alpha = 0.55f),
                         maxLines = 1,
@@ -180,7 +197,7 @@ private fun GuideStep(
                 style = MaterialTheme.typography.bodyLarge.copy(
                     fontSize = 9.sp,
                     lineHeight = 11.sp,
-                    fontWeight = FontWeight.Medium
+                    fontWeight = FontWeight.Light
                 ),
                 color = Color.White.copy(alpha = 0.55f),
                 maxLines = 1,
@@ -188,6 +205,28 @@ private fun GuideStep(
             )
         }
     }
+}
+
+@Composable
+private fun ReadyPulseDot() {
+    val transition = rememberInfiniteTransition(label = "ready-pulse")
+    val alpha = transition.animateFloat(
+        initialValue = 0.45f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "ready-pulse-alpha"
+    )
+
+    Box(
+        modifier = Modifier
+            .size(9.dp)
+            .alpha(alpha.value)
+            .clip(CircleShape)
+            .background(Color(0xFF63E283))
+    )
 }
 
 @Composable
@@ -225,7 +264,7 @@ private fun DeviceBadge(
 ) {
     Box(
         modifier = modifier
-            .size(40.dp)
+            .requiredSize(40.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(Color.White.copy(alpha = 0.12f)),
         contentAlignment = Alignment.Center

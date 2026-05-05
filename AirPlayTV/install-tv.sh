@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Script de instalação rápida na TV Sony via ADB
-# Uso: ./install-tv.sh [IP_DA_TV]
+# Uso: ./install-tv.sh [IP_DA_TV] [--logs]
 
 set -e
 
@@ -12,10 +12,28 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Configuração
-TV_TARGET="${1:-192.168.1.100:5555}"  # Aceita IP ou IP:PORTA
 DEFAULT_TV_PORT="5555"
 PACKAGE_NAME="com.airplay.tv"
 APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
+TV_TARGET="192.168.1.100:5555"  # Aceita IP ou IP:PORTA
+SHOW_LOGS=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --logs)
+            SHOW_LOGS=true
+            ;;
+        -h|--help)
+            echo "Uso: ./install-tv.sh [IP_DA_TV] [--logs]"
+            echo "  IP_DA_TV: IP ou IP:PORTA da TV. Padrao: 192.168.1.100:5555"
+            echo "  --logs: abre logcat em tempo real ao final da instalacao"
+            exit 0
+            ;;
+        *)
+            TV_TARGET="$arg"
+            ;;
+    esac
+done
 
 if [[ "$TV_TARGET" == *:* ]]; then
     TV_SERIAL="$TV_TARGET"
@@ -86,10 +104,14 @@ fi
 
 echo -e "${GREEN}✓ Aplicativo iniciado${NC}\n"
 
-# Mostrar logs
 echo -e "${GREEN}=== Deploy concluído com sucesso! ===${NC}\n"
-echo -e "${YELLOW}Monitorando logs (Ctrl+C para sair)...${NC}\n"
 
-# Limpar logs antigos e mostrar novos
-adb -s "$TV_SERIAL" logcat -c
-adb -s "$TV_SERIAL" logcat | grep --color=always "AirPlay"
+if [ "$SHOW_LOGS" = true ]; then
+    echo -e "${YELLOW}Monitorando logs (Ctrl+C para sair)...${NC}\n"
+
+    # Limpar logs antigos e mostrar novos
+    adb -s "$TV_SERIAL" logcat -c
+    adb -s "$TV_SERIAL" logcat | grep --color=always "AirPlay"
+else
+    echo -e "${YELLOW}Use --logs para abrir o logcat em tempo real ao final.${NC}\n"
+fi

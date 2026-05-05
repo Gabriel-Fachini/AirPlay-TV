@@ -28,9 +28,12 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.airplay.tv.R
@@ -93,7 +96,12 @@ fun AirPlayBackdrop(
         }
 
         Text(
-            text = "Desenvolvido por Gabriel Fachini",
+            text = buildAnnotatedString {
+                append("Desenvolvido por ")
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                    append("Gabriel Fachini")
+                }
+            },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 18.dp),
@@ -101,7 +109,7 @@ fun AirPlayBackdrop(
             style = MaterialTheme.typography.bodyLarge.copy(
                 fontSize = 10.sp,
                 lineHeight = 10.sp,
-                fontWeight = FontWeight.Bold,
+                fontWeight = FontWeight.Normal,
                 letterSpacing = 0.sp
             ),
             textAlign = TextAlign.Center
@@ -160,7 +168,11 @@ private fun AirPlayGlyph() {
 }
 
 @Composable
-fun AirPlayTopBadge(text: String, modifier: Modifier = Modifier) {
+fun AirPlayTopBadge(
+    text: String,
+    modifier: Modifier = Modifier,
+    showIndicator: Boolean = true
+) {
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(999.dp))
@@ -180,12 +192,14 @@ fun AirPlayTopBadge(text: String, modifier: Modifier = Modifier) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .size(12.dp)
-                .clip(CircleShape)
-                .background(Color(0xFF92C2FF))
-        )
+        if (showIndicator) {
+            Box(
+                modifier = Modifier
+                    .size(12.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF92C2FF))
+            )
+        }
         Text(
             text = text,
             color = Color.White,

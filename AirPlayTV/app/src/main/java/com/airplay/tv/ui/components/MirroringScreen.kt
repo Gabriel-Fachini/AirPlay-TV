@@ -9,7 +9,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -18,7 +17,6 @@ import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.widget.FrameLayout
-import com.airplay.tv.R
 import com.airplay.tv.util.Constants
 import com.airplay.tv.util.TelemetryCollector
 
@@ -102,21 +100,7 @@ fun MirroringScreen(
                 modifier = surfaceModifier.align(Alignment.Center)
             )
         }
-        
-        // Hint de controle (canto inferior)
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(24.dp),
-            contentAlignment = Alignment.BottomCenter
-        ) {
-            Text(
-                text = stringResource(R.string.state_mirroring_hint),
-                fontSize = 18.sp,
-                color = Color.White.copy(alpha = 0.6f)
-            )
-        }
-        
+
         // Debug overlay (canto superior direito)
         if (Constants.DEBUG_OVERLAY_ENABLED) {
             DebugOverlay(

@@ -18,18 +18,9 @@ fun IdleScreen(
     deviceName: String,
     mdnsState: mDNSModule.ServiceState = mDNSModule.ServiceState.Unregistered
 ) {
-    val registeredName = (mdnsState as? mDNSModule.ServiceState.Registered)?.serviceName
-    val displayName = registeredName ?: deviceName
-    val networkBadge = when (mdnsState) {
-        is mDNSModule.ServiceState.Registered -> "Rede: AirPlay disponivel"
-        is mDNSModule.ServiceState.Registering -> "Rede: publicando receptor"
-        is mDNSModule.ServiceState.Failed -> "Rede: falha no anuncio"
-        is mDNSModule.ServiceState.Unregistered -> "Rede: inicializando"
-    }
+    val displayName = if (deviceName.isBlank()) "AirPlay TV" else "AirPlay TV"
 
-    AirPlayBackdrop(
-        topRightContent = { AirPlayTopBadge(text = networkBadge) }
-    ) {
+    AirPlayBackdrop {
         Row(
             modifier = Modifier
                 .fillMaxSize()
@@ -44,6 +35,7 @@ fun IdleScreen(
             MirrorGuideCard(
                 deviceName = displayName,
                 mdnsState = mdnsState,
+                isReady = mdnsState is mDNSModule.ServiceState.Registered,
                 modifier = Modifier.width(432.dp)
             )
         }
