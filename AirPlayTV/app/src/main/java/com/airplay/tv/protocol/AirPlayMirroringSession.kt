@@ -2,7 +2,6 @@ package com.airplay.tv.protocol
 
 import com.airplay.tv.media.containsIdrNalUnit
 import com.airplay.tv.media.VideoDecoder
-import com.airplay.tv.util.Constants
 import com.airplay.tv.util.Logger
 import java.nio.ByteBuffer
 
@@ -19,6 +18,7 @@ class AirPlayMirroringSession(
     private val pairingManager: AirPlayPairingManager,
     private val decryptFairPlayAesKey: (ByteArray) -> ByteArray?,
     private val startMirrorVideoServer: () -> Int,
+    private val getEventPort: () -> Int,
     private val onCodecConfigReceived: (sps: ByteBuffer, pps: ByteBuffer, width: Int, height: Int) -> Unit,
     private val onAudioCryptoConfigured: (AudioCryptoConfig?) -> Unit,
     private val prepareAudioStream: (AudioStreamConfig) -> AudioStreamConfig,
@@ -32,6 +32,7 @@ class AirPlayMirroringSession(
         pairingManager = pairingManager,
         decryptFairPlayAesKey = decryptFairPlayAesKey,
         startMirrorVideoServer = startMirrorVideoServer,
+        getEventPort = getEventPort,
         onAudioCryptoConfigured = onAudioCryptoConfigured,
         prepareAudioStream = prepareAudioStream,
         onVideoStreamConfigured = { decryptor ->

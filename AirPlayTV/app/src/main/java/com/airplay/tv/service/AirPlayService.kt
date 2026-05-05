@@ -8,6 +8,7 @@ import android.view.Surface
 import com.airplay.tv.protocol.ProtocolHandler
 import com.airplay.tv.util.Constants
 import com.airplay.tv.util.Logger
+import com.airplay.tv.util.TelemetryCollector
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -29,6 +30,7 @@ class AirPlayService : Service() {
         mediaPipelineController.audioDecoder,
     )
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var currentRtspPort: Int = Constants.RTSP_PORT
 
     inner class LocalBinder : Binder() {
         fun getService(): AirPlayService = this@AirPlayService
@@ -110,14 +112,17 @@ class AirPlayService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Logger.i(Logger.TAG_SERVICE, "AirPlayService started")
 
-        val success = protocolHandler.startRTSPServer(Constants.RTSP_PORT)
+        currentRtspPort = intent?.getIntExtra(Constants.EXTRA_RTSP_PORT, Constants.RTSP_PORT)
+            ?: Constants.RTSP_PORT
+
+        val success = protocolHandler.startRTSPServer(currentRtspPort)
         if (!success) {
-            Logger.e(Logger.TAG_SERVICE, "Failed to start RTSP server")
+            Logger.e(Logger.TAG_SERVICE, "Failed to start RTSP server on port $currentRtspPort")
             stopSelf()
             return START_NOT_STICKY
         }
 
-        Logger.i(Logger.TAG_SERVICE, "RTSP server started on port ${Constants.RTSP_PORT}")
+        Logger.i(Logger.TAG_SERVICE, "RTSP server started on port $currentRtspPort")
         return START_STICKY
     }
 
@@ -251,7 +256,7 @@ class AirPlayService : Service() {
         }
 
         try {
-            protocolHandler.startRTSPServer(Constants.RTSP_PORT)
+            protocolHandler.startRTSPServer(currentRtspPort)
         } catch (e: Exception) {
             Logger.e(Logger.TAG_SERVICE, "Error restarting RTSP server", e)
         }

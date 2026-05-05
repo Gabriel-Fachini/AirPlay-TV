@@ -13,8 +13,11 @@ import com.airplay.tv.util.Constants
 import com.airplay.tv.util.Logger
 import com.airplay.tv.util.TelemetryCollector
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
@@ -23,15 +26,20 @@ import kotlinx.coroutines.launch
 class AirPlayViewModel(application: Application) : AndroidViewModel(application) {
     
     private val uiStateManager = UIStateManager()
-    private val telemetryCollector = TelemetryCollector()
     private val mdnsModule = mDNSModule(application.applicationContext)
     
     val uiState: StateFlow<UIStateManager.UIState> = uiStateManager.currentState
-    val telemetry: StateFlow<TelemetryCollector.Telemetry> = telemetryCollector.telemetry
     val mdnsState: StateFlow<mDNSModule.ServiceState> = mdnsModule.serviceState
     
     private val serviceConnectionManager = ServiceConnectionManager(application)
-    private val mediaStateTracker = MediaStateTracker(uiStateManager, telemetryCollector)
+    val telemetry: StateFlow<TelemetryCollector.Telemetry> = TelemetryFlowBinder.bind(
+        serviceConnectionManager.serviceFlow.map { service -> service?.getTelemetry() }
+    ).stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = TelemetryCollector.Telemetry()
+    )
+    private val mediaStateTracker = MediaStateTracker(uiStateManager)
 
     init {
         // Inicializar com estado Startup
@@ -98,26 +106,6 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
                     mediaStateTracker.handleMediaPlaybackStateChange(mediaState)
                 }
             }
-
-            launch {
-                service.getTelemetry().collect { serviceTelemetry ->
-                    telemetryCollector.updateFps(serviceTelemetry.fps.toFloat())
-                    telemetryCollector.updateLatency(serviceTelemetry.latencyMs)
-                    telemetryCollector.updateBitrate(serviceTelemetry.bitrateMbps * 1000f)
-                    telemetryCollector.updateFrameStats(
-                        droppedFrames = serviceTelemetry.droppedFrames,
-                        totalFrames = serviceTelemetry.totalFrames
-                    )
-                }
-            }
-
-            launch {
-                service.getVideoOutputSize().collect { videoOutputSize ->
-                    if (videoOutputSize.width > 0 && videoOutputSize.height > 0) {
-                        telemetryCollector.updateResolution(videoOutputSize.width, videoOutputSize.height)
-                    }
-                }
-            }
         }
     }
     
@@ -128,7 +116,6 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
         when (state) {
             is SessionManager.SessionState.Idle -> {
                 uiStateManager.returnToIdle("AirPlayTV")
-                telemetryCollector.reset()
             }
             
             is SessionManager.SessionState.Active -> {
@@ -138,12 +125,6 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
                         resolution = state.session.getResolutionString(),
                         sessionStartTime = state.session.startTime
                     )
-                )
-                
-                // Atualizar telemetria
-                telemetryCollector.updateResolution(
-                    state.session.videoWidth,
-                    state.session.videoHeight
                 )
             }
             
@@ -216,16 +197,36 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
             if (localIp != null) {
                 Logger.i(Logger.TAG_SERVICE, "Local IP: $localIp")
             }
+
+            val rtspPort = NetworkUtils.findAvailablePort(
+                preferredPort = Constants.RTSP_PORT,
+                scanLimit = Constants.RTSP_PORT_SCAN_LIMIT
+            )
+            if (rtspPort == null) {
+                Logger.e(Logger.TAG_SERVICE, "No available RTSP port found near ${Constants.RTSP_PORT}")
+                uiStateManager.transitionTo(
+                    UIStateManager.UIState.Error(
+                        "Outra app de AirPlay parece estar usando as portas do receptor. Feche-a e tente novamente."
+                    )
+                )
+                return@launch
+            }
+            if (rtspPort != Constants.RTSP_PORT) {
+                Logger.w(
+                    Logger.TAG_SERVICE,
+                    "Default RTSP port ${Constants.RTSP_PORT} busy, falling back to $rtspPort"
+                )
+            }
             
             // Registrar serviço mDNS
             mdnsModule.registerService(
                 deviceName = "AirPlayTV",
-                port = Constants.RTSP_PORT
+                port = rtspPort
             )
             
-            serviceConnectionManager.startAndBindService()
+            serviceConnectionManager.startAndBindService(rtspPort)
             
-            Logger.i(Logger.TAG_SERVICE, "AirPlay service started")
+            Logger.i(Logger.TAG_SERVICE, "AirPlay service started on port $rtspPort")
         }
     }
 
@@ -257,7 +258,6 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
             
             // Retornar ao Idle
             uiStateManager.returnToIdle("AirPlayTV")
-            telemetryCollector.reset()
         }
     }
 
@@ -287,11 +287,6 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
                 sessionStartTime = System.currentTimeMillis()
             )
         )
-        
-        // Simular algumas métricas
-        telemetryCollector.updateResolution(1920, 1080)
-        telemetryCollector.updateFps(30f)
-        telemetryCollector.updateLatency(250)
     }
     
     /**
@@ -306,7 +301,6 @@ class AirPlayViewModel(application: Application) : AndroidViewModel(application)
      */
     fun returnToIdle() {
         uiStateManager.returnToIdle("AirPlayTV")
-        telemetryCollector.reset()
     }
     
     override fun onCleared() {

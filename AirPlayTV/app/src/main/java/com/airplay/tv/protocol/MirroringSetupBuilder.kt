@@ -1,6 +1,5 @@
 package com.airplay.tv.protocol
 
-import com.airplay.tv.util.Constants
 import com.airplay.tv.util.Logger
 import com.dd.plist.BinaryPropertyListParser
 import com.dd.plist.BinaryPropertyListWriter
@@ -14,6 +13,7 @@ internal class MirroringSetupBuilder(
     private val pairingManager: AirPlayPairingManager,
     private val decryptFairPlayAesKey: (ByteArray) -> ByteArray?,
     private val startMirrorVideoServer: () -> Int,
+    private val getEventPort: () -> Int,
     private val onAudioCryptoConfigured: (AudioCryptoConfig?) -> Unit,
     private val prepareAudioStream: (AudioStreamConfig) -> AudioStreamConfig,
     private val onVideoStreamConfigured: (decryptor: VideoStreamDecryptor) -> Unit
@@ -93,7 +93,7 @@ internal class MirroringSetupBuilder(
         ).localTimingPort
 
         val response = NSDictionary().apply {
-            put("eventPort", NSNumber(Constants.RTSP_PORT.toLong()))
+            put("eventPort", NSNumber(getEventPort().toLong()))
             put("timingPort", NSNumber(localTimingPort.toLong()))
         }
 

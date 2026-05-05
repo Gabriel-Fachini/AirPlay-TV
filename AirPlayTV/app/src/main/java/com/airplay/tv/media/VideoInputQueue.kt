@@ -7,7 +7,7 @@ import java.util.concurrent.LinkedBlockingQueue
 class VideoInputQueue {
     var bufferSize = Constants.JITTER_BUFFER_FRAMES * 6
         private set
-        
+
     private var inputQueue = LinkedBlockingQueue<VideoDecoder.H264Frame>(bufferSize)
 
     fun clear() {
@@ -23,7 +23,7 @@ class VideoInputQueue {
         } else {
             bufferSize = maxOf(bufferSize - 2, 6)
         }
-        
+
         if (bufferSize != oldSize) {
             Logger.i(Logger.TAG_VIDEO, "Buffer size adjusted: $oldSize → $bufferSize frames")
             val oldQueue = inputQueue
@@ -33,21 +33,18 @@ class VideoInputQueue {
     }
 
     fun queueFrame(
-        data: ByteArray, 
-        timestamp: Long, 
-        isKeyFrame: Boolean,
+        frame: VideoDecoder.H264Frame,
         submittedInputFrames: Long,
-        onFramesDropped: (Long) -> Unit
+        onFramesDropped: (VideoPerformanceTracker.LocalDropReason, Long) -> Unit
     ) {
-        val frame = VideoDecoder.H264Frame(data, timestamp, isKeyFrame)
         if (inputQueue.offer(frame)) {
             return
         }
 
-        if (isKeyFrame) {
+        if (frame.isKeyFrame) {
             val evictedFrames = inputQueue.size
             inputQueue.clear()
-            onFramesDropped(evictedFrames.toLong())
+            onFramesDropped(VideoPerformanceTracker.LocalDropReason.STALE_QUEUE_EVICTION, evictedFrames.toLong())
             if (evictedFrames > 0) {
                 Logger.i(
                     Logger.TAG_VIDEO,
@@ -65,18 +62,21 @@ class VideoInputQueue {
                 true
             }
             if (evictedFrame) {
-                onFramesDropped(1)
+                onFramesDropped(VideoPerformanceTracker.LocalDropReason.QUEUE_OVERFLOW, 1)
             }
             if (inputQueue.offer(frame)) {
                 return
             }
         }
 
-        onFramesDropped(1)
+        onFramesDropped(VideoPerformanceTracker.LocalDropReason.QUEUE_OVERFLOW, 1)
         Logger.w(Logger.TAG_VIDEO, "Input queue full, dropping frames")
     }
 
-    fun pollFrameForCodec(submittedInputFrames: Long, onFramesDropped: (Long) -> Unit): VideoDecoder.H264Frame? {
+    fun pollFrameForCodec(
+        submittedInputFrames: Long,
+        onFramesDropped: (Long) -> Unit
+    ): VideoDecoder.H264Frame? {
         var frame = inputQueue.poll() ?: return null
 
         while (submittedInputFrames == 0L && !frame.isKeyFrame && !containsCodecConfig(frame.data)) {

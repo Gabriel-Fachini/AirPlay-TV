@@ -27,6 +27,7 @@ class ProtocolHandler(
         SLIDESHOW
     }
 
+    private var currentRtspPort: Int = Constants.RTSP_PORT
     private val pairingManager = AirPlayPairingManager()
     private val audioPipeline = ProtocolAudioPipeline(audioDecoder)
     private val playbackStateStore = ProtocolPlaybackStateStore()
@@ -35,6 +36,7 @@ class ProtocolHandler(
         pairingManager = pairingManager,
         decryptFairPlayAesKey = { encryptedKey -> jniBridge.decryptFairPlayAesKeyNative(encryptedKey) },
         startMirrorVideoServer = { jniBridge.startMirrorVideoServerNative() },
+        getEventPort = { currentRtspPort },
         onCodecConfigReceived = { sps: ByteBuffer, pps: ByteBuffer, width: Int, height: Int ->
             // Emit codec config event
             _codecConfigReceived.tryEmit(CodecConfig(sps, pps, width, height))
@@ -192,6 +194,7 @@ class ProtocolHandler(
         val success = jniBridge.startRTSPServerNative(port)
         
         if (success) {
+            currentRtspPort = port
             Logger.i(Logger.TAG_PROTOCOL, "RTSP server started successfully")
             _connectionState.value = ConnectionState.Idle
             rtpParser.resetStats()

@@ -28,6 +28,7 @@ fun MirroringScreen(
     clientIp: String,
     resolution: String,
     telemetry: TelemetryCollector.Telemetry,
+    telemetryOverlayVisible: Boolean,
     onSurfaceReady: (Surface) -> Unit = {},
     onSurfaceReleased: () -> Unit = {}
 ) {
@@ -102,7 +103,7 @@ fun MirroringScreen(
         }
 
         // Debug overlay (canto superior direito)
-        if (Constants.DEBUG_OVERLAY_ENABLED) {
+        if (telemetryOverlayVisible) {
             DebugOverlay(
                 telemetry = telemetry,
                 modifier = Modifier
@@ -149,9 +150,9 @@ fun DebugOverlay(
         )
         
         Text(
-            text = "Latência: ${telemetry.latencyMs} ms",
+            text = "Latência local: ${telemetry.localLatencyMs} ms",
             fontSize = 14.sp,
-            color = if (telemetry.latencyMs <= Constants.MAX_LATENCY_MS) Color.Green else Color.Red
+            color = if (telemetry.localLatencyMs <= Constants.MAX_LATENCY_MS) Color.Green else Color.Red
         )
         
         Text(
@@ -167,9 +168,9 @@ fun DebugOverlay(
         )
         
         Text(
-            text = "Dropped: ${telemetry.droppedFrames}/${telemetry.totalFrames}",
+            text = "Dropped local: ${telemetry.droppedLocalFrames}/${telemetry.totalVideoFrames}",
             fontSize = 14.sp,
-            color = if (telemetry.droppedFrames == 0) Color.Green else Color.Yellow
+            color = if (telemetry.droppedLocalFrames == 0) Color.Green else Color.Yellow
         )
     }
 }

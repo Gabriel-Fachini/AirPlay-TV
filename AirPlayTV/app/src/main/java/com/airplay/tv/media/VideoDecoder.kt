@@ -3,7 +3,6 @@ package com.airplay.tv.media
 import android.media.MediaCodec
 import android.media.MediaFormat
 import android.view.Surface
-import com.airplay.tv.service.TelemetryCollector
 import com.airplay.tv.util.Constants
 import com.airplay.tv.util.Logger
 import kotlinx.coroutines.*
@@ -11,7 +10,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.nio.ByteBuffer
-import java.util.concurrent.LinkedBlockingQueue
+import java.util.ArrayDeque
 import kotlin.coroutines.coroutineContext
 
 /**
@@ -19,7 +18,6 @@ import kotlin.coroutines.coroutineContext
  * Renderiza frames em SurfaceView
  */
 class VideoDecoder(
-    private val telemetryCollector: TelemetryCollector,
     private val performanceTracker: VideoPerformanceTracker,
     private val inputQueue: VideoInputQueue,
     private val onVideoSizeChanged: (width: Int, height: Int) -> Unit = { _, _ -> }
@@ -36,13 +34,13 @@ class VideoDecoder(
     private var codec: MediaCodec? = null
     private var decoderJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-    
+    private val queuedFrameTimesByPtsUs = mutableMapOf<Long, ArrayDeque<Long>>()
 
-    
     data class H264Frame(
         val data: ByteArray,
         val timestamp: Long,
-        val isKeyFrame: Boolean = false
+        val isKeyFrame: Boolean = false,
+        val receivedAtNs: Long,
     ) {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
@@ -53,6 +51,7 @@ class VideoDecoder(
             if (!data.contentEquals(other.data)) return false
             if (timestamp != other.timestamp) return false
             if (isKeyFrame != other.isKeyFrame) return false
+            if (receivedAtNs != other.receivedAtNs) return false
             
             return true
         }
@@ -61,6 +60,7 @@ class VideoDecoder(
             var result = data.contentHashCode()
             result = 31 * result + timestamp.hashCode()
             result = 31 * result + isKeyFrame.hashCode()
+            result = 31 * result + receivedAtNs.hashCode()
             return result
         }
     }
@@ -204,10 +204,11 @@ class VideoDecoder(
         
         // Limpar fila de entrada
         inputQueue.clear()
+        queuedFrameTimesByPtsUs.clear()
         performanceTracker.onSessionStopped()
         _state.value = DecoderState.Idle
         
-        Logger.i(Logger.TAG_VIDEO, "Video decoder stopped (decoded=${performanceTracker.framesDecoded}, dropped=${performanceTracker.framesDropped}, fps=${performanceTracker.currentFps})")
+        Logger.i(Logger.TAG_VIDEO, "Video decoder stopped (decoded=${performanceTracker.framesDecoded}, dropped=${performanceTracker.droppedLocalFrames}, fps=${performanceTracker.currentFps})")
     }
     
     /**
@@ -230,16 +231,22 @@ class VideoDecoder(
         
         // Validar frame antes de enfileirar
         if (!isValidAnnexBFrame(data)) {
-            performanceTracker.onFramesDropped(1)
-            val framesDropped = performanceTracker.framesDropped
+            performanceTracker.onFramesDropped(VideoPerformanceTracker.LocalDropReason.INVALID_FRAME)
+            val framesDropped = performanceTracker.droppedLocalFrames
             if (framesDropped % 10 == 0L) {
                 Logger.w(Logger.TAG_VIDEO, "Dropping invalid H.264 frame (total dropped=$framesDropped)")
             }
             return
         }
-        
-        inputQueue.queueFrame(data, timestamp, isKeyFrame, performanceTracker.submittedInputFrames) { count ->
-            performanceTracker.onFramesDropped(count)
+
+        val frame = H264Frame(
+            data = data,
+            timestamp = timestamp,
+            isKeyFrame = isKeyFrame,
+            receivedAtNs = performanceTracker.captureFrameReceivedAtNs(),
+        )
+        inputQueue.queueFrame(frame, performanceTracker.submittedInputFrames) { reason, count ->
+            performanceTracker.onFramesDropped(reason, count)
         }
     }
     
@@ -297,7 +304,7 @@ class VideoDecoder(
 
         // Obter próximo frame da fila. Antes do primeiro submit, o decoder precisa começar em um IDR.
         val frame = inputQueue.pollFrameForCodec(performanceTracker.submittedInputFrames) { count ->
-            performanceTracker.onFramesDropped(count)
+            performanceTracker.onFramesDropped(VideoPerformanceTracker.LocalDropReason.PRE_START_NON_KEYFRAME, count)
         } ?: return
         
         // Copiar dados para buffer
@@ -305,7 +312,7 @@ class VideoDecoder(
         if (inputBuffer != null) {
             inputBuffer.clear()
             if (inputBuffer.remaining() < frame.data.size) {
-                performanceTracker.onFramesDropped(1)
+                performanceTracker.onFramesDropped(VideoPerformanceTracker.LocalDropReason.CODEC_INPUT_REJECTED)
                 Logger.w(
                     Logger.TAG_VIDEO,
                     "Codec input buffer too small (${inputBuffer.remaining()}B) for frame ${frame.data.size}B"
@@ -316,6 +323,7 @@ class VideoDecoder(
             
             // Converter timestamp RTP (90kHz) para microsegundos
             val timestampUs = (frame.timestamp * 1000000L) / 90000L
+            queuedFrameTimesByPtsUs.getOrPut(timestampUs) { ArrayDeque() }.addLast(frame.receivedAtNs)
             
             // Enfileirar para decodificação
             codec.queueInputBuffer(
@@ -327,7 +335,7 @@ class VideoDecoder(
             )
             performanceTracker.onFrameSubmittedToCodec(frame.data.size, frame.isKeyFrame)
         } else {
-            performanceTracker.onFramesDropped(1)
+            performanceTracker.onFramesDropped(VideoPerformanceTracker.LocalDropReason.CODEC_INPUT_REJECTED)
         }
     }
 
@@ -345,10 +353,11 @@ class VideoDecoder(
         when {
             outputIndex >= 0 -> {
                 // Frame decodificado disponível
+                val frameReceivedAtNs = queuedFrameTimesByPtsUs.removeFirst(bufferInfo.presentationTimeUs)
                 
                 // Renderizar no Surface (true = render)
                 codec.releaseOutputBuffer(outputIndex, true)
-                performanceTracker.onFrameDecoded(bufferInfo.presentationTimeUs)
+                performanceTracker.onFrameDecoded(bufferInfo.presentationTimeUs, frameReceivedAtNs)
             }
             
             outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
@@ -375,7 +384,7 @@ class VideoDecoder(
     /**
      * Obtém número de frames dropados
      */
-    fun getFramesDropped(): Long = performanceTracker.framesDropped
+    fun getFramesDropped(): Long = performanceTracker.droppedLocalFrames
     
     /**
      * Reseta métricas
@@ -385,6 +394,15 @@ class VideoDecoder(
     }
 
     fun getLastRenderedPresentationTimeUs(): Long = performanceTracker.lastRenderedPresentationTimeUs
+
+    private fun MutableMap<Long, ArrayDeque<Long>>.removeFirst(presentationTimeUs: Long): Long? {
+        val samples = get(presentationTimeUs) ?: return null
+        val receivedAtNs = if (samples.isEmpty()) null else samples.removeFirst()
+        if (samples.isEmpty()) {
+            remove(presentationTimeUs)
+        }
+        return receivedAtNs
+    }
 
     private fun extractDisplaySize(format: MediaFormat): Pair<Int, Int>? {
         return try {

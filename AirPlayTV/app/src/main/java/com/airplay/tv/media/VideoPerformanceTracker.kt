@@ -1,16 +1,33 @@
 package com.airplay.tv.media
 
-import com.airplay.tv.service.TelemetryCollector
 import com.airplay.tv.util.Logger
+import com.airplay.tv.util.TelemetryCollector
 
 class VideoPerformanceTracker(
-    private val telemetryCollector: TelemetryCollector
+    private val telemetryCollector: TelemetryCollector,
+    private val clock: MonotonicClock = MonotonicClock.system()
 ) {
+    fun interface MonotonicClock {
+        fun nowNanos(): Long
+
+        companion object {
+            fun system(): MonotonicClock = MonotonicClock { System.nanoTime() }
+        }
+    }
+
+    enum class LocalDropReason {
+        INVALID_FRAME,
+        STALE_QUEUE_EVICTION,
+        QUEUE_OVERFLOW,
+        PRE_START_NON_KEYFRAME,
+        CODEC_INPUT_REJECTED,
+    }
+
     var onAdjustBufferSize: ((increase: Boolean) -> Unit)? = null
 
     var framesDecoded = 0L
         private set
-    var framesDropped = 0L
+    var droppedLocalFrames = 0L
         private set
     var currentFps = 0
         private set
@@ -19,25 +36,27 @@ class VideoPerformanceTracker(
     var lastRenderedPresentationTimeUs = 0L
         private set
 
-    private var lastFpsTime = System.currentTimeMillis()
+    private val droppedFramesByReason = enumValues<LocalDropReason>().associateWith { 0L }.toMutableMap()
+    private var lastFpsTimeNs = clock.nowNanos()
     private var fpsCounter = 0
-    private var sessionStartTimeUs = 0L
+    private var lastLocalLatencyMs = 0
     private var bytesSubmittedSinceLastBitrateSample = 0L
-    private var lastBitrateSampleTimeMs = System.currentTimeMillis()
+    private var lastBitrateSampleTimeNs = clock.nowNanos()
 
     private var lowFpsCounter = 0
     private var highDropRateCounter = 0
-    private val performanceCheckInterval = 1000L
-    private var lastPerformanceCheck = System.currentTimeMillis()
+    private val performanceCheckIntervalNs = 1_000_000_000L
+    private var lastPerformanceCheckNs = clock.nowNanos()
 
     fun onSessionStarted() {
         resetMetrics()
-        sessionStartTimeUs = System.currentTimeMillis() * 1000L
     }
 
     fun onSessionStopped() {
         lastRenderedPresentationTimeUs = 0L
     }
+
+    fun captureFrameReceivedAtNs(): Long = clock.nowNanos()
 
     fun onFrameSubmittedToCodec(size: Int, isKeyFrame: Boolean) {
         submittedInputFrames++
@@ -48,68 +67,68 @@ class VideoPerformanceTracker(
         }
     }
 
-    fun onFramesDropped(count: Long) {
-        framesDropped += count
+    fun onFramesDropped(reason: LocalDropReason, count: Long = 1) {
+        if (count <= 0L) {
+            return
+        }
+        droppedLocalFrames += count
+        droppedFramesByReason[reason] = (droppedFramesByReason[reason] ?: 0L) + count
+        emitVideoTelemetry()
     }
 
-    fun onFrameDecoded(presentationTimeUs: Long) {
+    fun onFrameDecoded(presentationTimeUs: Long, frameReceivedAtNs: Long?) {
         framesDecoded++
         updateFps()
-        
-        val currentTimeUs = System.currentTimeMillis() * 1000L
-        val elapsedSinceSessionStartUs = currentTimeUs - sessionStartTimeUs
-        val latencyUs = elapsedSinceSessionStartUs - presentationTimeUs
-        val latencyMs = latencyUs / 1000
+
+        if (frameReceivedAtNs != null) {
+            val latencyNs = (clock.nowNanos() - frameReceivedAtNs).coerceAtLeast(0L)
+            lastLocalLatencyMs = (latencyNs / 1_000_000L).toInt()
+        }
         lastRenderedPresentationTimeUs = presentationTimeUs
-        
-        telemetryCollector.updateVideoMetrics(
-            fps = currentFps,
-            latencyMs = latencyMs.toInt(),
-            droppedFrames = framesDropped.toInt(),
-            totalFrames = (framesDecoded + framesDropped).toInt()
-        )
+        emitVideoTelemetry()
     }
+
+    fun getDroppedFrames(reason: LocalDropReason): Long = droppedFramesByReason[reason] ?: 0L
 
     private fun updateFps() {
         fpsCounter++
-        val now = System.currentTimeMillis()
-        val elapsed = now - lastFpsTime
-        if (elapsed >= 1000) {
-            currentFps = (fpsCounter * 1000 / elapsed).toInt()
+        val nowNs = clock.nowNanos()
+        val elapsedNs = nowNs - lastFpsTimeNs
+        if (elapsedNs >= 1_000_000_000L) {
+            currentFps = ((fpsCounter * 1_000_000_000L) / elapsedNs).toInt()
             fpsCounter = 0
-            lastFpsTime = now
-            checkPerformance()
+            lastFpsTimeNs = nowNs
+            checkPerformance(nowNs)
         }
     }
 
     private fun updateBitrateIfNeeded() {
-        val now = System.currentTimeMillis()
-        val elapsedMs = now - lastBitrateSampleTimeMs
-        if (elapsedMs < 1000) return
+        val nowNs = clock.nowNanos()
+        val elapsedNs = nowNs - lastBitrateSampleTimeNs
+        if (elapsedNs < 1_000_000_000L) return
 
-        val bitrateMbps = if (elapsedMs > 0) {
-            (bytesSubmittedSinceLastBitrateSample * 8f) / (elapsedMs / 1000f) / 1_000_000f
+        val bitrateKbps = if (elapsedNs > 0) {
+            (bytesSubmittedSinceLastBitrateSample * 8f * 1_000_000_000f) / elapsedNs.toFloat() / 1_000f
         } else {
             0f
         }
 
-        telemetryCollector.updateBitrate(bitrateMbps)
+        telemetryCollector.updateBitrateKbps(bitrateKbps)
         bytesSubmittedSinceLastBitrateSample = 0L
-        lastBitrateSampleTimeMs = now
+        lastBitrateSampleTimeNs = nowNs
     }
 
-    private fun checkPerformance() {
-        val now = System.currentTimeMillis()
-        if (now - lastPerformanceCheck < performanceCheckInterval) return
-        lastPerformanceCheck = now
-        
-        val totalFrames = framesDecoded + framesDropped
+    private fun checkPerformance(nowNs: Long) {
+        if (nowNs - lastPerformanceCheckNs < performanceCheckIntervalNs) return
+        lastPerformanceCheckNs = nowNs
+
+        val totalFrames = framesDecoded + droppedLocalFrames
         val dropRate = if (totalFrames > 0) {
-            (framesDropped.toFloat() / totalFrames.toFloat()) * 100f
+            (droppedLocalFrames.toFloat() / totalFrames.toFloat()) * 100f
         } else {
             0f
         }
-        
+
         if (currentFps < 20 && currentFps > 0) {
             lowFpsCounter++
             if (lowFpsCounter >= 3) {
@@ -119,7 +138,7 @@ class VideoPerformanceTracker(
         } else {
             lowFpsCounter = 0
         }
-        
+
         if (dropRate > 5f) {
             highDropRateCounter++
             if (highDropRateCounter >= 3) {
@@ -130,22 +149,35 @@ class VideoPerformanceTracker(
         } else {
             highDropRateCounter = 0
         }
-        
-        val latency = telemetryCollector.telemetry.value.latencyMs
-        if (latency > 1000 && dropRate < 1f) {
-            Logger.i(Logger.TAG_VIDEO, "High latency detected: ${latency}ms, reducing buffer")
+
+        val localLatency = telemetryCollector.telemetry.value.localLatencyMs
+        if (localLatency > 1000 && dropRate < 1f) {
+            Logger.i(Logger.TAG_VIDEO, "High local latency detected: ${localLatency}ms, reducing buffer")
             onAdjustBufferSize?.invoke(false)
         }
     }
 
+    private fun emitVideoTelemetry() {
+        telemetryCollector.updateVideoMetrics(
+            fps = currentFps.toFloat(),
+            localLatencyMs = lastLocalLatencyMs,
+            droppedLocalFrames = droppedLocalFrames.toInt(),
+            totalVideoFrames = (framesDecoded + droppedLocalFrames).toInt()
+        )
+    }
+
     fun resetMetrics() {
         framesDecoded = 0
-        framesDropped = 0
+        droppedLocalFrames = 0
         fpsCounter = 0
         currentFps = 0
         submittedInputFrames = 0
+        lastLocalLatencyMs = 0
         bytesSubmittedSinceLastBitrateSample = 0L
-        lastFpsTime = System.currentTimeMillis()
-        lastBitrateSampleTimeMs = lastFpsTime
+        droppedFramesByReason.keys.forEach { droppedFramesByReason[it] = 0L }
+        lastFpsTimeNs = clock.nowNanos()
+        lastBitrateSampleTimeNs = lastFpsTimeNs
+        lastPerformanceCheckNs = lastFpsTimeNs
+        emitVideoTelemetry()
     }
 }

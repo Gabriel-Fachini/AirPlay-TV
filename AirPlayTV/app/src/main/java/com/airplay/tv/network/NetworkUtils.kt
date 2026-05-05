@@ -70,6 +70,18 @@ object NetworkUtils {
             return false
         }
     }
+
+    /**
+     * Procura uma porta TCP livre a partir da preferida.
+     */
+    fun findAvailablePort(preferredPort: Int, scanLimit: Int): Int? {
+        for (candidate in preferredPort until preferredPort + scanLimit) {
+            if (isPortAvailable(candidate)) {
+                return candidate
+            }
+        }
+        return null
+    }
     
     /**
      * Formata endereço IP para exibição

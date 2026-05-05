@@ -9,6 +9,7 @@ import com.airplay.tv.media.VideoInputQueue
 import com.airplay.tv.media.VideoPerformanceTracker
 import com.airplay.tv.protocol.ProtocolHandler
 import com.airplay.tv.util.Logger
+import com.airplay.tv.util.TelemetryCollector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -19,7 +20,7 @@ internal class MediaPipelineController(
 
     val performanceTracker = VideoPerformanceTracker(telemetryCollector)
     val inputQueue = VideoInputQueue()
-    val videoDecoder = VideoDecoder(telemetryCollector, performanceTracker, inputQueue) { width, height ->
+    val videoDecoder = VideoDecoder(performanceTracker, inputQueue) { width, height ->
         handleVideoOutputSizeChanged(width, height)
     }
     val audioDecoder = AudioDecoder()
@@ -76,7 +77,6 @@ internal class MediaPipelineController(
             }
 
             telemetryCollector.updateResolution(sessionInfo.videoWidth, sessionInfo.videoHeight)
-            telemetryCollector.updateAudioMetrics(sessionInfo.audioSampleRate, sessionInfo.audioChannels)
             pendingSessionInfo = null
             mediaPipelineStarted = true
 

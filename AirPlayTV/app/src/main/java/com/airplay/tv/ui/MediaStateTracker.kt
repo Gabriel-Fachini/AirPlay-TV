@@ -3,11 +3,9 @@ package com.airplay.tv.ui
 import com.airplay.tv.protocol.ProtocolHandler
 import com.airplay.tv.util.Constants
 import com.airplay.tv.util.Logger
-import com.airplay.tv.util.TelemetryCollector
 
 class MediaStateTracker(
-    private val uiStateManager: UIStateManager,
-    private val telemetryCollector: TelemetryCollector
+    private val uiStateManager: UIStateManager
 ) {
     fun handleMediaPlaybackStateChange(state: ProtocolHandler.MediaPlaybackState) {
         when (state) {
@@ -24,7 +22,6 @@ class MediaStateTracker(
                     "UI entering photo playback: sessionId=${state.sessionId.ifEmpty { "none" }} " +
                         "asset=${state.assetKey.ifEmpty { "none" }} bytes=${state.imageData.size}"
                 )
-                telemetryCollector.reset()
                 uiStateManager.transitionTo(
                     UIStateManager.UIState.MediaPlayback(
                         clientIp = state.clientIp,
@@ -46,7 +43,6 @@ class MediaStateTracker(
                         "theme=${state.theme ?: "none"} duration=${state.slideDurationSeconds}s " +
                         "hasImage=${state.imageData != null}"
                 )
-                telemetryCollector.reset()
                 uiStateManager.transitionTo(
                     UIStateManager.UIState.MediaPlayback(
                         clientIp = state.clientIp,

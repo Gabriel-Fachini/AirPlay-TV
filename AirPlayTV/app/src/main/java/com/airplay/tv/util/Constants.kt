@@ -7,6 +7,8 @@ object Constants {
     // Network
     const val MDNS_SERVICE_TYPE = "_airplay._tcp"
     const val RTSP_PORT = 7000
+    const val RTSP_PORT_SCAN_LIMIT = 32
+    const val EXTRA_RTSP_PORT = "com.airplay.tv.extra.RTSP_PORT"
     const val DEFAULT_DEVICE_NAME = "Sony TV - Sala"
     
     // Protocol
@@ -34,7 +36,4 @@ object Constants {
     // apenas enviando pacotes de vídeo via TCP
     const val SESSION_TIMEOUT_MS = 30000L
     const val RECONNECT_DELAY_MS = 3000L
-    
-    // Debug
-    const val DEBUG_OVERLAY_ENABLED = true
 }

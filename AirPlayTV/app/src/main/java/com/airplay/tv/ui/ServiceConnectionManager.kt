@@ -8,6 +8,7 @@ import android.content.ServiceConnection
 import android.os.IBinder
 import android.view.Surface
 import com.airplay.tv.service.AirPlayService
+import com.airplay.tv.util.Constants
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -42,8 +43,10 @@ class ServiceConnectionManager(private val application: Application) {
         }
     }
 
-    fun startAndBindService() {
-        val intent = Intent(application, AirPlayService::class.java)
+    fun startAndBindService(rtspPort: Int) {
+        val intent = Intent(application, AirPlayService::class.java).apply {
+            putExtra(Constants.EXTRA_RTSP_PORT, rtspPort)
+        }
         application.startService(intent)
         application.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
     }
